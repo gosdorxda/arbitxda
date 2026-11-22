@@ -205,7 +205,7 @@ export function ManifestPage() {
   const snapshotRef = useRef<ManifestSnapshot | null>(null);
   const pollCountRef = useRef(0);
   const [search, setSearch] = useState("");
-  const [hideDust, setHideDust] = useState(true);
+  const [minVolInput, setMinVolInput] = useState(String(MANIFEST_DUST_USD));
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "volume", desc: true });
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -272,8 +272,9 @@ export function ManifestPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let rows = tokens;
-    if (hideDust) rows = rows.filter((token) => token.volume24hUsd >= MANIFEST_DUST_USD);
+    const minVolRaw = Number(minVolInput);
+    const minVol = Number.isFinite(minVolRaw) && minVolRaw > 0 ? minVolRaw : 0;
+    let rows = tokens.filter((token) => token.volume24hUsd >= minVol);
     if (q) {
       rows = rows.filter((token) => {
         if (token.symbol.toLowerCase().includes(q)) return true;
@@ -303,7 +304,7 @@ export function ManifestPage() {
       return a.symbol.localeCompare(b.symbol);
     });
     return sorted;
-  }, [tokens, search, hideDust, sort]);
+  }, [tokens, search, minVolInput, sort]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / MANIFEST_PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -311,7 +312,7 @@ export function ManifestPage() {
 
   useEffect(() => {
     setPage(0);
-  }, [search, hideDust, sort]);
+  }, [search, minVolInput, sort]);
 
   const allPageOpen = pageRows.length > 0 && pageRows.every((token) => expanded.has(token.baseMint));
 
@@ -417,14 +418,27 @@ export function ManifestPage() {
             placeholder="Cari symbol, mint, atau quote..."
             className="w-full min-w-0 rounded-full border border-border bg-panel-2 py-1.5 px-3 text-[13px] text-foreground outline-none placeholder:text-muted focus:border-border-strong sm:w-64"
           />
-          <label className="inline-flex items-center gap-2 text-[12px] text-muted">
+          <label className="inline-flex items-center gap-1.5 text-[12px] text-muted">
+            Min vol
             <input
-              type="checkbox"
-              checked={hideDust}
-              onChange={(event) => setHideDust(event.target.checked)}
-              className="accent-foreground"
+              type="number"
+              min={0}
+              step={1}
+              inputMode="decimal"
+              value={minVolInput}
+              onChange={(event) => {
+                const value = event.target.value;
+                if (value === "") {
+                  setMinVolInput("");
+                  return;
+                }
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed) || parsed < 0) return;
+                setMinVolInput(value);
+              }}
+              className="h-8 w-[4.5rem] rounded-full border border-border bg-panel-2 px-2 text-[13px] text-foreground outline-none placeholder:text-muted focus:border-border-strong num"
             />
-            Sembunyikan dust (&lt; {formatUsdCompact(MANIFEST_DUST_USD)})
+            USD
           </label>
           <button
             type="button"
@@ -530,7 +544,7 @@ export function ManifestPage() {
             <span>
               {safePage * MANIFEST_PAGE_SIZE + 1}–{Math.min(filtered.length, (safePage + 1) * MANIFEST_PAGE_SIZE)} dari{" "}
               {filtered.length.toLocaleString("id-ID")} token
-              {hideDust && tokens.length !== filtered.length ? ` (dari ${tokens.length.toLocaleString("id-ID")} setelah filter saham)` : ""}
+              {tokens.length !== filtered.length ? ` (dari ${tokens.length.toLocaleString("id-ID")} setelah filter saham)` : ""}
             </span>
             <div className="flex items-center gap-2">
               <button type="button" className="btn-ghost" disabled={safePage <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>

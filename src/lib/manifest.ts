@@ -71,13 +71,22 @@ const SOL_RATE_TIMEOUT_MS = 8_000;
  * 1. Name or symbol text matches xStock / xStocks, "Ondo Tokenized",
  *    "Backpack Securities", "tokenized/tokenised stock|etf|equity",
  *    or "pre-IPO" equity wrappers.
- * 2. The existing scanner `isTokenizedStock()` matches the resolved symbol
+ * 2. The symbol uses the official xStock / Ondo ticker casing: caps equity
+ *    ticker + literal lowercase "x" (AAPLx, BRK.Bx, PT-STRCx) or "on"
+ *    (NVDAon, NTESon, Von). All-caps crypto (TRX, ONDO, VON, PT-USX) and
+ *    meme names (Onion, baton, Max) are not matched.
+ * 3. The symbol/name is a known pre-IPO / private-company wrapper
+ *    (OpenAI, Anthropic, Anduril, SpaceX, SK Hynix) that has no x/on suffix.
+ * 4. The existing scanner `isTokenizedStock()` matches the resolved symbol
  *    plus those names (NVDAX-style suffix against known equity tickers, and
  *    the shared name regex). Crypto keep-list symbols (ONDO, RENDER, …)
- *    are not dropped by suffix rules.
- * 3. The symbol itself is a known equity ticker of length >= 3, except
+ *    are not dropped by those suffix rules.
+ * 5. The symbol itself is a known equity ticker of length >= 3, except
  *    CRYPTO_KEEP and a short conflict list (META is MetaDAO on Solana,
- *    APP/SOLV/ARM also collide with crypto or ambiguous tickers).
+ *    APP/SOLV/ARM also collide with crypto or ambiguous tickers). A short
+ *    Manifest-only list covers 2-letter tickers that appear as bare bases
+ *    (BA, BE, MU). Other 2-letter equity tickers are left alone (BP looked
+ *    like crypto on this venue).
  *
  * If /metadata and /asset are both unavailable we cannot apply this safely
  * (we only have mints), so the snapshot keeps every market and sets
@@ -85,6 +94,17 @@ const SOL_RATE_TIMEOUT_MS = 8_000;
  */
 const NAME_STOCK_RE =
   /\b(x[\s-]?stocks?|ondo\s+tokenized|backpack\s+securities|tokenized\s+(stock|equity|etf|asset)|tokenised\s+(stock|equity|etf|asset)|pre-?ipo)\b/i;
+
+/** Backpack xStocks: equity ticker in caps + literal lowercase "x". */
+const XSTOCK_SYMBOL_RE = /^[A-Z][A-Z0-9]{0,4}(?:\.[A-Z])?x$/;
+/** Prefixed xStock wrappers such as PT-STRCx. Must not match all-caps PT-USX. */
+const PREFIXED_XSTOCK_RE = /^PT-[A-Z][A-Z0-9.]*x$/;
+/** Ondo Global Markets: caps ticker + literal lowercase "on". */
+const ONDO_SYMBOL_RE = /^[A-Z][A-Z0-9]{0,4}on$/;
+/** Pre-IPO / private-company wrappers that do not use the x/on suffix. */
+const PRIVATE_STOCK_RE = /openai|anthropic|anduril|spacex|skhynix/i;
+/** 2-letter equity tickers seen as bare Manifest bases (3-letter uses EQUITY_TICKERS). */
+const MANIFEST_TWO_LETTER_EQUITY = new Set(["BA", "BE", "MU"]);
 
 const SYMBOL_CONFLICT_KEEP = new Set(["META", "APP", "SOLV", "ARM", "NOW", "ALL", "HAS", "NET", "FUN", "GAS", "KEY", "WIN", "ICE", "BOX", "CAT", "LOW"]);
 
@@ -97,6 +117,10 @@ export function isManifestTokenizedStock(input: {
   const name = (input.name ?? "").trim();
   const blob = `${symbol} ${name}`.trim();
   if (blob && NAME_STOCK_RE.test(blob)) return true;
+  if (XSTOCK_SYMBOL_RE.test(symbol) || PREFIXED_XSTOCK_RE.test(symbol) || ONDO_SYMBOL_RE.test(symbol)) {
+    return true;
+  }
+  if (blob && PRIVATE_STOCK_RE.test(blob)) return true;
   if (
     isTokenizedStock({
       base: symbol || input.mint || "",
@@ -108,6 +132,7 @@ export function isManifestTokenizedStock(input: {
   const upper = symbol.toUpperCase();
   if (!upper || CRYPTO_KEEP.has(upper) || SYMBOL_CONFLICT_KEEP.has(upper)) return false;
   if (upper.length >= 3 && EQUITY_TICKERS.has(upper)) return true;
+  if (MANIFEST_TWO_LETTER_EQUITY.has(upper)) return true;
   return false;
 }
 
