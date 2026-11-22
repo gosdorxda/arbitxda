@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 type AppNavProps = {
-  current: "tabel" | "compare" | "favorites" | "scanner";
+  current: "tabel" | "compare" | "favorites" | "scanner" | "manifest";
 };
 
 function segmentClass(active: boolean): string {
@@ -27,6 +27,9 @@ export function AppNav({ current }: AppNavProps) {
       </Link>
       <Link href="/scanner" className={segmentClass(current === "scanner")}>
         Scanner
+      </Link>
+      <Link href="/manifest" className={segmentClass(current === "manifest")}>
+        Manifest
       </Link>
     </nav>
   );

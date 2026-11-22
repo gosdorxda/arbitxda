@@ -94,6 +94,7 @@ function hostLabel(url: string): string {
     if (host.includes("p2pb2b")) return "P2PB2B";
     if (host.includes("safe.trade") || host.includes("safetrade")) return "SafeTrade";
     if (host.includes("binance.com") && (url.includes("/bapi/defi/") || url.includes("/alpha"))) return "Binance Alpha";
+    if (host.includes("mfx-stats-mainnet.fly.dev") || host.includes("manifest.trade") || host.includes("manifest-orders.fly.dev")) return "Manifest";
     return host || url;
   } catch {
     return url;
