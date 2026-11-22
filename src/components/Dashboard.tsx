@@ -1,5 +1,7 @@
 "use client";
 
+import { sortByExchangeName } from "@/lib/format";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/components/AppHeader";
 import { ExchangeMarketBar } from "@/components/ExchangeMarketBar";
@@ -86,7 +88,7 @@ export function Dashboard() {
     const response = await fetch("/api/status", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || "Gagal memuat status");
-    setExchanges(data.exchanges ?? []);
+    setExchanges(sortByExchangeName(data.exchanges ?? [], (item) => item.name || item.id));
   }, []);
 
   const loadTickers = useCallback(async () => {
@@ -462,7 +464,7 @@ function FetchAllProgress({ job, onDismiss }: { job: FetchJob; onDismiss: () => 
         />
       </div>
       <div className="fetch-all-progress-pills">
-        {job.items.map((item) => {
+        {sortByExchangeName(job.items, (item) => item.name).map((item) => {
           const title =
             item.error ??
             (item.status === "success" && item.rowCount != null ? `${item.rowCount} pair` : item.name);

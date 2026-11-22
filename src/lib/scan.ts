@@ -40,6 +40,7 @@ export type ScanLeg = {
   depositEnabled: number | null;
   withdrawEnabled: number | null;
   chainstatusRaw: string | null;
+  contracts: AlsoOnPeer["contracts"];
   fetchedAt: string;
 };
 
@@ -133,6 +134,7 @@ export function runScan(
     depositEnabled: peer.depositEnabled,
     withdrawEnabled: peer.withdrawEnabled,
     chainstatusRaw: peer.chainstatusRaw,
+    contracts: peer.contracts,
     fetchedAt: fetchedAt.get(pairKey(peer.exchange, peer.rawSymbol)) ?? "",
   });
 

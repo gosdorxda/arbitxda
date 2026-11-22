@@ -292,7 +292,7 @@ export const AlsoOnCell = memo(function AlsoOnCell({ count, peers }: AlsoOnCellP
                 </thead>
                 <tbody>
                   {peers.map((peer) => {
-                    const spotUrl = getSpotUrl(peer.exchange, peer.base, peer.quote, peer.rawSymbol);
+                    const spotUrl = getSpotUrl(peer.exchange, peer.base, peer.quote, peer.rawSymbol, peer.contracts);
                     const pair = `${peer.base}/${peer.quote}`;
                     return (
                       <tr key={peer.exchange}>

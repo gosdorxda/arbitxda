@@ -265,3 +265,13 @@ export function marketStatusMeta(status?: string | null, active?: number | null)
     }
   }
 }
+
+
+/** Urut nama tampilan exchange, A→Z, tanpa peduli huruf besar/kecil. */
+export function compareExchangeName(a: string, b: string): number {
+  return a.localeCompare(b, "en", { sensitivity: "base" });
+}
+
+export function sortByExchangeName<T>(items: readonly T[], nameOf: (item: T) => string): T[] {
+  return items.slice().sort((left, right) => compareExchangeName(nameOf(left) || "", nameOf(right) || ""));
+}

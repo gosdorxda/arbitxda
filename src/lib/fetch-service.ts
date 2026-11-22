@@ -12,6 +12,7 @@ import { cancelEnrichment, hasEnrichment, startEnrichment } from "./enrich-servi
 import { getEnabledExchanges } from "./env";
 import { getAdapter, hasAdapter } from "./exchanges/registry";
 import { filterStockTokens } from "./exchanges/stock-filter";
+import { sortByExchangeName } from "./format";
 
 /**
  * Satu pair per base per exchange: kalau base punya pair USDT dan USD (mis. BTSE BTC-USDT & BTC-USD),
@@ -129,6 +130,6 @@ export async function fetchPairOrderBook(exchangeId: string, rawSymbol: string) 
 
 export function listUiExchanges() {
   const fromDb = getEnabledExchangeRows();
-  if (fromDb.length > 0) return fromDb;
-  return getEnabledExchanges().map((id) => ({ id, name: id, enabled: 1 }));
+  const rows = fromDb.length > 0 ? fromDb : getEnabledExchanges().map((id) => ({ id, name: id, enabled: 1 }));
+  return sortByExchangeName(rows, (row) => row.name || row.id);
 }

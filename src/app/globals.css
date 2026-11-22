@@ -166,6 +166,21 @@ button:disabled {
   color: var(--down);
 }
 
+.depth-bar-cell {
+  width: 7.75rem;
+  min-width: 7.75rem;
+  max-width: 7.75rem;
+}
+.depth-bar-bid {
+  background: var(--up);
+  opacity: 0.85;
+}
+.depth-bar-ask {
+  background: var(--down);
+  opacity: 0.85;
+}
+
+
 .muted {
   color: var(--muted);
 }

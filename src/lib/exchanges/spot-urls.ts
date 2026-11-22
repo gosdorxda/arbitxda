@@ -1,5 +1,7 @@
+import type { TokenContract } from "../types";
+
 /** Template URL halaman spot per exchange. Tambah entri baru di sini saat menambah adapter. */
-const SPOT_URLS: Record<string, (base: string, quote: string, rawSymbol?: string | null) => string> = {
+const SPOT_URLS: Record<string, (base: string, quote: string, rawSymbol?: string | null, contracts?: TokenContract[] | null) => string | null> = {
   kraken: (base, quote) =>
     `https://pro.kraken.com/app/trade/${base.toLowerCase()}-${quote.toLowerCase()}`,
   bingx: (base, quote) =>
@@ -60,6 +62,15 @@ const SPOT_URLS: Record<string, (base: string, quote: string, rawSymbol?: string
   },
   p2pb2b: (base, quote) =>
     `https://p2pb2b.com/trade/${base.toUpperCase()}_${quote.toUpperCase()}/`,
+  safetrade: (base, quote) =>
+    `https://safetrade.com/exchange/${base.toUpperCase()}-${quote.toUpperCase()}?type=basic`,
+  // Binance Alpha: /en/alpha/{chainName}/{contract}. chainName disimpan apa adanya dari token list
+  // (BSC, Base, Ethereum, ...) mengikuti pola tautan resmi seperti /en/alpha/BSC/{contract}.
+  "binance-alpha": (_base, _quote, _rawSymbol, contracts) => {
+    const row = (contracts ?? []).find((item) => item.chain && item.contract);
+    if (!row) return null;
+    return `https://www.binance.com/en/alpha/${encodeURIComponent(row.chain)}/${encodeURIComponent(row.contract)}`;
+  },
 };
 
 export function getSpotUrl(
@@ -67,8 +78,9 @@ export function getSpotUrl(
   base: string,
   quote: string,
   rawSymbol?: string | null,
+  contracts?: TokenContract[] | null,
 ): string | null {
   const build = SPOT_URLS[exchange.toLowerCase()];
   if (!build || !base || !quote) return null;
-  return build(base, quote, rawSymbol);
+  return build(base, quote, rawSymbol, contracts);
 }

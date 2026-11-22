@@ -1,3 +1,4 @@
+import { sortByExchangeName } from "./format";
 import type { TickerRow } from "./types";
 
 export type CompareExchangeInfo = {
@@ -25,6 +26,7 @@ export type CompareExchangeCell = {
   withdrawEnabled: number | null;
   chainstatusRaw: string | null;
   stale: number | null;
+  contracts: TickerRow["contracts"];
 };
 
 export type CompareCoinEntry = {
@@ -78,6 +80,7 @@ function toCell(row: TickerRow): CompareExchangeCell {
     withdrawEnabled: row.withdraw_enabled,
     chainstatusRaw: row.chainstatus_raw ?? null,
     stale: row.stale ?? null,
+    contracts: row.contracts ?? null,
   };
 }
 
@@ -125,11 +128,14 @@ export function buildCompareIndex(
   }
 
   return {
-    exchanges: exchanges.map((item) => ({
-      id: item.id,
-      name: item.name,
-      pairCount: counts.get(item.id.toLowerCase()) ?? 0,
-    })),
+    exchanges: sortByExchangeName(
+      exchanges.map((item) => ({
+        id: item.id,
+        name: item.name,
+        pairCount: counts.get(item.id.toLowerCase()) ?? 0,
+      })),
+      (item) => item.name || item.id,
+    ),
     byBase,
   };
 }

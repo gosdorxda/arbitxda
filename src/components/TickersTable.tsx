@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
+import { DepthCell, DepthProvider } from "@/components/DepthBar";
+import { useVisibleDepth } from "@/components/useVisibleDepth";
 import { buildAlsoOnIndex, peersForRow, type TickerTableRow } from "@/lib/also-on";
 import {
   columnFilteringFeature,
@@ -419,7 +421,7 @@ function ContractsCell({ row }: { row: TickerRow }) {
 }
 
 function SymbolCell({ row, label }: { row: TickerRow; label: string }) {
-  const href = getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol);
+  const href = getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol, row.contracts);
   const text = <span className="font-medium text-foreground">{label}</span>;
   if (!href) return text;
   return (
@@ -622,6 +624,18 @@ const columns = columnHelper.columns([
     sortDescFirst: true,
     meta: { align: "left" },
     cell: (info) => <FetchTimeCell value={info.getValue()} />,
+  }),
+  columnHelper.display({
+    id: "depth",
+    header: "Depth",
+    enableSorting: false,
+    enableGlobalFilter: false,
+    enableHiding: true,
+    meta: { align: "left" },
+    cell: (info) => {
+      const row = info.row.original;
+      return <DepthCell exchange={row.exchange} rawSymbol={row.raw_symbol} />;
+    },
   }),
   columnHelper.display({
     id: "orderbook",
@@ -883,7 +897,7 @@ export function TickersTable({
       });
     },
     initialState: {
-      pagination: { pageIndex: 0, pageSize: 100 },
+      pagination: { pageIndex: 0, pageSize: 50 },
     },
     meta: {
       openOrderBook: onOpenOrderBook,
@@ -907,8 +921,12 @@ export function TickersTable({
   const to = Math.min(filteredCount, (pageIndex + 1) * pageSize);
   const pageCount = table.getPageCount();
   const hideableColumns = table.getAllLeafColumns().filter((column) => column.getCanHide());
+  const depthEnabled = table.getColumn("depth")?.getIsVisible() !== false;
+  const pageRows = table.getRowModel().rows.map((row) => row.original);
+  const depthLookup = useVisibleDepth(pageRows, depthEnabled);
 
   return (
+    <DepthProvider value={depthLookup}>
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mb-3 flex flex-col gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
@@ -1293,5 +1311,6 @@ export function TickersTable({
         </div>
       </div>
     </div>
+    </DepthProvider>
   );
 }

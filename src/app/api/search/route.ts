@@ -52,7 +52,7 @@ export async function GET(request: Request) {
       fetchedAt: row.fetched_at ?? null,
       stale: row.stale ?? null,
       blacklisted: blocked.has(`${row.exchange}\t${row.raw_symbol}`),
-      spotUrl: getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol),
+      spotUrl: getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol, row.contracts),
     }));
     return NextResponse.json(
       { ok: true, q: q.trim(), results },

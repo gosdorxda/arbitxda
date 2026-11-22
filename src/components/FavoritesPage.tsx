@@ -8,7 +8,7 @@ import { FundingIcons } from "@/components/FundingIcons";
 import { useOrderBook } from "@/components/OrderBookModal";
 import { buildAlsoOnIndex, peersForRow, type TickerTableRow } from "@/lib/also-on";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
-import { formatPct, formatPrice, formatUsdCompact } from "@/lib/format";
+import { formatPct, formatPrice, formatUsdCompact, sortByExchangeName } from "@/lib/format";
 import type { TickerRow } from "@/lib/types";
 
 type FavoriteEntry = { exchange: string; raw_symbol: string };
@@ -81,7 +81,7 @@ function ExternalLinkIcon() {
 }
 
 function SymbolLink({ row }: { row: TickerRow }) {
-  const href = getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol);
+  const href = getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol, row.contracts);
   const label = row.base || row.raw_symbol;
   const text = <span className="font-medium text-foreground">{label}</span>;
   if (!href) return text;
@@ -176,9 +176,12 @@ export function FavoritesPage() {
         return next;
       });
       setExchanges(
-        (statusData.exchanges ?? [])
-          .filter((item) => item.enabled !== 0)
-          .map((item) => ({ id: item.id, name: item.name })),
+        sortByExchangeName(
+          (statusData.exchanges ?? [])
+            .filter((item) => item.enabled !== 0)
+            .map((item) => ({ id: item.id, name: item.name })),
+          (item) => item.name,
+        ),
       );
       setBanner(null);
     } catch (error) {

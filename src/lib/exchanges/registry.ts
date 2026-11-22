@@ -26,6 +26,8 @@ import { weexAdapter } from "./weex";
 import { phemexAdapter } from "./phemex";
 import { dextradeAdapter } from "./dextrade";
 import { p2pb2bAdapter } from "./p2pb2b";
+import { safetradeAdapter } from "./safetrade";
+import { binanceAlphaAdapter } from "./binance-alpha";
 
 const adapters: Record<string, ExchangeAdapter> = {
   kraken: krakenAdapter,
@@ -55,6 +57,8 @@ const adapters: Record<string, ExchangeAdapter> = {
   phemex: phemexAdapter,
   dextrade: dextradeAdapter,
   p2pb2b: p2pb2bAdapter,
+  safetrade: safetradeAdapter,
+  "binance-alpha": binanceAlphaAdapter,
 };
 
 export function getAdapter(id: string): ExchangeAdapter {

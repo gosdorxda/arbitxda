@@ -15,6 +15,7 @@ export type AlsoOnPeer = {
   depositEnabled: number | null;
   withdrawEnabled: number | null;
   chainstatusRaw: string | null;
+  contracts: TickerRow["contracts"];
   gapPct: number | null;
 };
 
@@ -104,6 +105,7 @@ export function buildAlsoOnIndex(
         depositEnabled: picked.deposit_enabled,
         withdrawEnabled: picked.withdraw_enabled,
         chainstatusRaw: picked.chainstatus_raw ?? null,
+        contracts: picked.contracts ?? null,
         gapPct: null,
       });
     }

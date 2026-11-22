@@ -1,5 +1,7 @@
 "use client";
 
+import { sortByExchangeName } from "@/lib/format";
+
 type ExchangeMarketBarItem = {
   id: string;
   name: string;
@@ -21,24 +23,25 @@ function formatCount(value: number): string {
 }
 
 export function ExchangeMarketBar({ loading, items, totalCount }: ExchangeMarketBarProps) {
+  const sorted = sortByExchangeName(items, (item) => item.name);
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-background px-4 py-2 sm:px-5">
       <div
         className="inline-flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border-strong bg-panel-2 text-[12px]"
-        title={`${items.length} exchange · ${formatCount(totalCount)} pair`}
+        title={`${sorted.length} exchange · ${formatCount(totalCount)} pair`}
       >
         <span className="px-2.5 text-muted">
-          Total{items.length > 0 ? ` · ${items.length} ex` : " Market"}
+          Total{sorted.length > 0 ? ` · ${items.length} ex` : " Market"}
         </span>
         <span className="num inline-flex h-full items-center border-l border-border px-2 font-semibold text-foreground">
           {formatCount(totalCount)}
         </span>
       </div>
-      {items.length > 0 ? <span className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" /> : null}
-      {loading && items.length === 0 ? (
+      {sorted.length > 0 ? <span className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" /> : null}
+      {loading && sorted.length === 0 ? (
         <span className="muted px-1 py-1 text-[13px]">Memuat exchange...</span>
       ) : null}
-      {items.map((exchange) => {
+      {sorted.map((exchange) => {
         const selected = exchange.selected;
         return (
           <button

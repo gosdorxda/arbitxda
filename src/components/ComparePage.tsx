@@ -21,7 +21,7 @@ import { ExchangeMarketBar } from "@/components/ExchangeMarketBar";
 import { FundingIcons } from "@/components/FundingIcons";
 import type { CompareCoinEntry, CompareExchangeCell, CompareExchangeInfo } from "@/lib/compare";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
-import { formatAmountCompact, formatPct, formatPrice, formatUsdCompact, formatWib, formatWibShort } from "@/lib/format";
+import { formatAmountCompact, formatPct, formatPrice, formatUsdCompact, formatWib, formatWibShort, sortByExchangeName } from "@/lib/format";
 import { usePersistedState } from "@/lib/persist";
 
 const FILTERS_KEY = "arbit-compare-filters";
@@ -218,7 +218,7 @@ const ExternalLinkIcon = memo(function ExternalLinkIcon() {
 });
 
 const CoinCell = memo(function CoinCell({ row }: { row: CompareTableRow }) {
-  const href = getSpotUrl(row.primary.exchange, row.primary.base, row.primary.quote, row.primary.rawSymbol);
+  const href = getSpotUrl(row.primary.exchange, row.primary.base, row.primary.quote, row.primary.rawSymbol, row.primary.contracts);
   const text = <span className="font-medium text-foreground">{row.base}</span>;
   if (!href) return text;
   return (
@@ -294,7 +294,7 @@ const ExchangeChip = memo(function ExchangeChip({
   const bodyRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0, placeAbove: false });
-  const href = getSpotUrl(item.cell.exchange, item.cell.base, item.cell.quote, item.cell.rawSymbol);
+  const href = getSpotUrl(item.cell.exchange, item.cell.base, item.cell.quote, item.cell.rawSymbol, item.cell.contracts);
   const cell = item.cell;
 
   const showPopover = () => {
@@ -702,7 +702,7 @@ export function ComparePage() {
       const response = await fetch("/api/compare", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || "Gagal memuat perbandingan");
-      setExchanges(data.exchanges ?? []);
+      setExchanges(sortByExchangeName(data.exchanges ?? [], (item) => item.name || item.id));
       setByBase(data.byBase ?? {});
       setBanner(null);
     } catch (error) {

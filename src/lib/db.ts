@@ -183,6 +183,8 @@ const EXCHANGE_NAMES: Record<string, string> = {
   phemex: "Phemex",
   dextrade: "Dex-Trade",
   p2pb2b: "P2PB2B",
+  safetrade: "SafeTrade",
+  "binance-alpha": "Binance Alpha",
 };
 
 function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
@@ -720,7 +722,7 @@ export function getLatestFetchLogs(): FetchLogRow[] {
 
 export function getEnabledExchangeRows(): { id: string; name: string; enabled: number }[] {
   return getDb()
-    .prepare(`SELECT id, name, enabled FROM exchanges WHERE enabled = 1 ORDER BY id`)
+    .prepare(`SELECT id, name, enabled FROM exchanges WHERE enabled = 1 ORDER BY name COLLATE NOCASE, id`)
     .all() as { id: string; name: string; enabled: number }[];
 }
 

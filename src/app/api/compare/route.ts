@@ -3,15 +3,19 @@ import { buildCompareIndex } from "@/lib/compare";
 import { getLatestTickers, listBlacklist } from "@/lib/db";
 import { getEnabledExchanges } from "@/lib/env";
 import { getAdapter, hasAdapter } from "@/lib/exchanges/registry";
+import { sortByExchangeName } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 function listEnabledExchanges() {
-  return getEnabledExchanges().map((id) => ({
-    id,
-    name: hasAdapter(id) ? getAdapter(id).name : id,
-  }));
+  return sortByExchangeName(
+    getEnabledExchanges().map((id) => ({
+      id,
+      name: hasAdapter(id) ? getAdapter(id).name : id,
+    })),
+    (item) => item.name || item.id,
+  );
 }
 
 export async function GET() {

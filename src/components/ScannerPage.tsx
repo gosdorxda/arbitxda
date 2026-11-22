@@ -7,7 +7,7 @@ import { FundingIcons } from "@/components/FundingIcons";
 import { useOrderBook } from "@/components/OrderBookModal";
 import { RelativeTime } from "@/components/RelativeTime";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
-import { formatPrice, formatRelativeId, formatUsdCompact, formatWib } from "@/lib/format";
+import { formatPrice, formatRelativeId, formatUsdCompact, formatWib, sortByExchangeName } from "@/lib/format";
 import { usePersistedState } from "@/lib/persist";
 import {
   DEFAULT_SCAN_SETTINGS,
@@ -130,7 +130,7 @@ function LegCard({
   onBlacklist: (leg: ScanLeg) => void;
   onOrderBook: (leg: ScanLeg) => void;
 }) {
-  const href = getSpotUrl(leg.exchange, leg.base, leg.quote, leg.rawSymbol);
+  const href = getSpotUrl(leg.exchange, leg.base, leg.quote, leg.rawSymbol, leg.contracts);
   const accent = side === "buy" ? "var(--up, #22a06b)" : "var(--down, #e5484d)";
   const name = (
     <span style={{ fontWeight: 600, fontSize: detail ? 13 : 14, color: "var(--foreground)" }}>
@@ -339,7 +339,7 @@ function ExchangePicker({
               Pilih semua
             </button>
           </div>
-          {exchanges.map((e) => (
+          {sortByExchangeName(exchanges, (item) => item.name).map((e) => (
             <label
               key={e.id}
               style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px", fontSize: 13, cursor: "pointer" }}
@@ -386,7 +386,10 @@ export function ScannerPage() {
         const status = (await statusRes.json()) as { exchanges?: Array<{ id: string; name: string; enabled?: number }> };
         const fav = (await favRes.json()) as { items?: PairEntry[] };
         setExchanges(
-          (status.exchanges ?? []).filter((e) => e.enabled !== 0).map((e) => ({ id: e.id, name: e.name })),
+          sortByExchangeName(
+            (status.exchanges ?? []).filter((e) => e.enabled !== 0).map((e) => ({ id: e.id, name: e.name })),
+            (item) => item.name,
+          ),
         );
         setFavorites(Array.isArray(fav.items) ? fav.items : []);
       } catch (error) {
