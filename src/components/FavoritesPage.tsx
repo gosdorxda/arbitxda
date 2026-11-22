@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
 import { AppHeader } from "@/components/AppHeader";
-import { DepthCell, DepthProvider } from "@/components/DepthBar";
+import { DepthCell, DepthProvider, DepthStatusBar } from "@/components/DepthBar";
 import { FavoriteStar } from "@/components/FavoriteStar";
 import { FundingIcons } from "@/components/FundingIcons";
 import { useOrderBook } from "@/components/OrderBookModal";
@@ -657,6 +657,7 @@ export function FavoritesPage() {
         </div>
 
         <DepthProvider value={depthLookup}>
+          {columnVisibility.depth ? <DepthStatusBar /> : null}
           <div className="tickers-scroll min-h-0 flex-1 overflow-auto">
             <table className="tickers-table w-full min-w-[56rem] border-separate border-spacing-0 text-left">
               <thead>

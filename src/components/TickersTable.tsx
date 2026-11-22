@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
-import { DepthCell, DepthProvider } from "@/components/DepthBar";
+import { DepthCell, DepthProvider, DepthStatusBar } from "@/components/DepthBar";
 import { useVisibleDepth } from "@/components/useVisibleDepth";
 import { buildAlsoOnIndex, peersForRow, type TickerTableRow } from "@/lib/also-on";
 import {
@@ -923,7 +923,9 @@ export function TickersTable({
   const hideableColumns = table.getAllLeafColumns().filter((column) => column.getCanHide());
   const depthEnabled = table.getColumn("depth")?.getIsVisible() !== false;
   const pageRows = table.getRowModel().rows.map((row) => row.original);
-  const depthLookup = useVisibleDepth(pageRows, depthEnabled);
+  const depthLookup = useVisibleDepth(pageRows, depthEnabled, {
+    page: filteredCount === 0 ? 1 : pageIndex + 1,
+  });
 
   return (
     <DepthProvider value={depthLookup}>
@@ -1181,6 +1183,8 @@ export function TickersTable({
           </span>
         </div>
       </div>
+
+      {depthEnabled ? <DepthStatusBar /> : null}
 
       <div className="tickers-scroll min-h-0 flex-1 overflow-auto">
         <table className="tickers-table w-full border-separate border-spacing-0 text-left">
