@@ -129,8 +129,7 @@ export function DepthBar({ bidUsd, askUsd }: { bidUsd: number; askUsd: number })
 }
 
 export function DepthStatusBar() {
-  const { progress, retryFailed } = useContext(DepthContext);
-  if (progress.total <= 0 && !progress.running) return null;
+  const { progress } = useContext(DepthContext);
 
   const parts: string[] = [];
   if (progress.running) {
@@ -159,22 +158,9 @@ export function DepthStatusBar() {
     parts.push(`update ${formatRelativeId(new Date(progress.lastUpdated).toISOString())}`);
   }
 
-  const canRetry = progress.failed > 0 || progress.staleCount > 0;
   return (
-    <div className="depth-status-bar">
+    <div className="depth-status-bar" title={parts.join(" · ")}>
       <p className="depth-status-text">{parts.join(" · ")}</p>
-      <span className="depth-status-retry-slot">
-        <button
-          type="button"
-          className="depth-retry-btn"
-          title="Coba lagi"
-          aria-label="Coba lagi"
-          disabled={!canRetry || progress.running}
-          onClick={retryFailed}
-        >
-          ↻
-        </button>
-      </span>
     </div>
   );
 }
