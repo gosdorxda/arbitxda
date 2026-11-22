@@ -130,6 +130,13 @@ export async function fetchPairOrderBook(exchangeId: string, rawSymbol: string) 
 
 export function listUiExchanges() {
   const fromDb = getEnabledExchangeRows();
-  const rows = fromDb.length > 0 ? fromDb : getEnabledExchanges().map((id) => ({ id, name: id, enabled: 1 }));
+  const byId = new Map(fromDb.map((row) => [row.id, row]));
+  // Selalu tampilkan exchange yang ada di ENABLED_EXCHANGES, meski seed DB belum ke-update.
+  for (const id of getEnabledExchanges()) {
+    if (byId.has(id)) continue;
+    const name = hasAdapter(id) ? getAdapter(id).name : id;
+    byId.set(id, { id, name, enabled: 1 });
+  }
+  const rows = [...byId.values()].filter((row) => row.enabled === 1);
   return sortByExchangeName(rows, (row) => row.name || row.id);
 }

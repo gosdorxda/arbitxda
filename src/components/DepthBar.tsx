@@ -25,6 +25,7 @@ export type DepthLookup = {
   getDepth: (exchange: string, rawSymbol: string) => DepthView;
   progress: DepthProgress;
   retryFailed: () => void;
+  retryOne: (exchange: string, rawSymbol: string) => void;
 };
 
 const emptyProgress: DepthProgress = {
@@ -42,6 +43,7 @@ const DepthContext = createContext<DepthLookup>({
   getDepth: () => ({ status: "idle", bidUsd: null, askUsd: null }),
   progress: emptyProgress,
   retryFailed: () => {},
+  retryOne: () => {},
 });
 
 export function DepthProvider({ value, children }: { value: DepthLookup; children: ReactNode }) {
@@ -49,20 +51,47 @@ export function DepthProvider({ value, children }: { value: DepthLookup; childre
 }
 
 export function DepthCell({ exchange, rawSymbol }: { exchange: string; rawSymbol: string }) {
-  const { getDepth } = useContext(DepthContext);
+  const { getDepth, retryOne, progress } = useContext(DepthContext);
   const view = getDepth(exchange, rawSymbol);
   if (view.status === "loading") {
-    return <DepthSkeleton />;
+    return (
+      <div className="depth-bar-wrap">
+        <DepthSkeleton />
+        <span className="depth-stale-hint">&nbsp;</span>
+      </div>
+    );
   }
-  if (view.status === "idle" || view.status === "error" || (view.bidUsd == null && view.askUsd == null)) {
-    return <span className="muted">-</span>;
+  if (view.status === "error") {
+    return (
+      <div className="depth-bar-wrap depth-bar-error">
+        <span className="muted">-</span>
+        <button
+          type="button"
+          className="depth-retry-btn"
+          title="Coba lagi"
+          aria-label="Coba lagi"
+          disabled={progress.running}
+          onClick={() => retryOne(exchange, rawSymbol)}
+        >
+          ↻
+        </button>
+      </div>
+    );
+  }
+  if (view.status === "idle" || (view.bidUsd == null && view.askUsd == null)) {
+    return (
+      <div className="depth-bar-wrap">
+        <span className="muted">-</span>
+        <span className="depth-stale-hint">&nbsp;</span>
+      </div>
+    );
   }
   const stale = view.status === "stale";
   const updated = view.at ? formatRelativeId(new Date(view.at).toISOString()) : "";
   return (
     <div className={stale ? "depth-bar-wrap depth-bar-stale" : "depth-bar-wrap"} title={stale ? `Data lama · update ${updated}` : undefined}>
       <DepthBar bidUsd={view.bidUsd ?? 0} askUsd={view.askUsd ?? 0} />
-      {stale ? <span className="depth-stale-hint">data lama</span> : null}
+      <span className="depth-stale-hint">{stale ? "data lama" : "\u00a0"}</span>
     </div>
   );
 }
@@ -134,11 +163,18 @@ export function DepthStatusBar() {
   return (
     <div className="depth-status-bar">
       <p className="depth-status-text">{parts.join(" · ")}</p>
-      {canRetry ? (
-        <button type="button" onClick={retryFailed} disabled={progress.running} className="btn-ghost !px-2 !py-0.5 !text-[11px]">
-          Coba lagi
+      <span className="depth-status-retry-slot">
+        <button
+          type="button"
+          className="depth-retry-btn"
+          title="Coba lagi"
+          aria-label="Coba lagi"
+          disabled={!canRetry || progress.running}
+          onClick={retryFailed}
+        >
+          ↻
         </button>
-      ) : null}
+      </span>
     </div>
   );
 }

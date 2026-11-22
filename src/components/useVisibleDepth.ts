@@ -123,7 +123,7 @@ export function useVisibleDepth(rows: DepthRow[], enabled: boolean, options?: Us
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const loadingRef = useRef(new Set<string>());
-  const forceRef = useRef(false);
+  const forceKeysRef = useRef<Set<string> | "stale-failed" | null>(null);
   const [tick, setTick] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const [sweepNonce, setSweepNonce] = useState(0);
@@ -138,21 +138,22 @@ export function useVisibleDepth(rows: DepthRow[], enabled: boolean, options?: Us
     if (!enabled) return;
     const current = rowsRef.current;
     const now = Date.now();
-    const force = forceRef.current;
-    forceRef.current = false;
+    const forceKeys = forceKeysRef.current;
+    forceKeysRef.current = null;
 
     const needed: DepthRow[] = [];
     for (const row of current) {
       const key = pairKey(row.exchange, row.raw_symbol);
       if (loadingRef.current.has(key)) continue;
+      const forced = forceKeys === "stale-failed" || (forceKeys instanceof Set && forceKeys.has(key));
       const entry = clientCache.get(key);
       if (!entry) {
         needed.push(row);
         continue;
       }
       const phase = phaseOf(entry, now);
-      if (force) {
-        if (phase !== "fresh" || entry.failedAt) needed.push(row);
+      if (forced) {
+        needed.push(row);
         continue;
       }
       if (phase === "fresh") continue;
@@ -375,9 +376,20 @@ export function useVisibleDepth(rows: DepthRow[], enabled: boolean, options?: Us
   );
 
   const retryFailed = useCallback(() => {
-    forceRef.current = true;
+    forceKeysRef.current = "stale-failed";
     setRetryNonce((value) => value + 1);
   }, []);
 
-  return { getDepth, progress, retryFailed };
+  const retryOne = useCallback((exchange: string, rawSymbol: string) => {
+    const key = pairKey(exchange, rawSymbol);
+    if (loadingRef.current.has(key)) return;
+    if (forceKeysRef.current !== "stale-failed") {
+      const set = forceKeysRef.current instanceof Set ? forceKeysRef.current : new Set<string>();
+      set.add(key);
+      forceKeysRef.current = set;
+    }
+    setRetryNonce((value) => value + 1);
+  }, []);
+
+  return { getDepth, progress, retryFailed, retryOne };
 }
