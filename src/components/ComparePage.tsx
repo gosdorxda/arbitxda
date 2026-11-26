@@ -1,700 +1,362 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-import {
-  createColumnHelper,
-  createPaginatedRowModel,
-  createSortedRowModel,
-  flexRender,
-  metaHelper,
-  columnVisibilityFeature,
-  rowPaginationFeature,
-  rowSortingFeature,
-  tableFeatures,
-  useTable,
-  type ColumnVisibilityState,
-  type SortingState,
-} from "@tanstack/react-table";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppHeader } from "@/components/AppHeader";
-import { ExchangeMarketBar } from "@/components/ExchangeMarketBar";
-import { FundingIcons } from "@/components/FundingIcons";
-import type { CompareCoinEntry, CompareExchangeCell, CompareExchangeInfo } from "@/lib/compare";
+import { useExchangeSettings } from "@/components/ExchangeSettings";
+import { useOrderBook } from "@/components/OrderBookModal";
+import { useCompareDepth, type CompareDepthPair } from "@/components/useCompareDepth";
+import type { CompareCoinEntry, CompareExchangeInfo } from "@/lib/compare";
+import {
+  computeCompareCoinGroups,
+  computeDepthRouteMetrics,
+  type CompareCoinGroup,
+  type CompareRoute,
+  type CompareSafetyFilters,
+  type DepthRouteMetrics,
+} from "@/lib/compare-routes";
+import { formatPct, formatPrice, formatRelativeId, formatUsdCompact, formatWib, sortByExchangeName } from "@/lib/format";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
-import { formatAmountCompact, formatPct, formatPrice, formatUsdCompact, formatWib, formatWibShort, sortByExchangeName } from "@/lib/format";
-import { usePersistedState } from "@/lib/persist";
 
-const FILTERS_KEY = "arbit-compare-filters";
-const CARD_FIELDS_KEY = "arbit-compare-card-fields";
-const COLUMN_VISIBILITY_KEY = "arbit-compare-column-visibility";
-const PAGE_SIZE_OPTIONS = [25, 50, 100];
-const ALWAYS_VISIBLE_COLUMNS = ["base", "otherCount"] as const;
-const HIDDEN_BY_DEFAULT_COLUMNS = [
-  "bid",
-  "ask",
-  "bidSize",
-  "askSize",
-  "spreadPct",
-  "funding",
-  "pair",
-  "fetchedAt",
-] as const;
-const DEFAULT_COLUMN_VISIBILITY: ColumnVisibilityState = Object.fromEntries(
-  HIDDEN_BY_DEFAULT_COLUMNS.map((id) => [id, false]),
-);
-const FILTER_INPUT =
-  "h-8 rounded-md border border-border bg-panel-2 px-2 text-[13px] text-foreground outline-none placeholder:text-muted focus:border-border-strong";
+const SETTINGS_STORAGE_KEY = "arbit.compare.settings.v3";
+const LEGACY_SETTINGS_KEY = "arbit.compare.settings.v2";
 
-type CompareFilters = {
+type CompareSettings = {
   search: string;
-  minExchanges: number;
-  primary: string;
+  defaultFeePct: string;
+  exchangeFees: Record<string, string>;
+  depthMode: boolean;
+  modalUsd: string;
+  showFundingOpen: boolean;
+  showFundingSuspended: boolean;
+  showFundingUnknown: boolean;
+  showNegative: boolean;
+  hideContractMismatch: boolean;
+  hideStale: boolean;
+  maxAgeMinutes: string;
+  minSpreadPct: string;
+  minVolumeUsd: string;
+  pageSize: 25 | 50 | 100;
 };
 
-const DEFAULT_FILTERS: CompareFilters = {
+const DEFAULT_SETTINGS: CompareSettings = {
   search: "",
-  minExchanges: 1,
-  primary: "",
+  defaultFeePct: "0.1",
+  exchangeFees: {},
+  depthMode: false,
+  modalUsd: "100",
+  showFundingOpen: true,
+  showFundingSuspended: true,
+  showFundingUnknown: true,
+  showNegative: false,
+  hideContractMismatch: true,
+  hideStale: true,
+  maxAgeMinutes: "",
+  minSpreadPct: "",
+  minVolumeUsd: "",
+  pageSize: 25,
 };
 
-function parseCompareFilters(raw: unknown): CompareFilters | null {
+type SortKey =
+  | "base"
+  | "grossSpreadPct"
+  | "netProfitPct"
+  | "depthProfitPct"
+  | "maxFillableUsd"
+  | "volume"
+  | "age"
+  | "routes";
+
+const FILTER_INPUT =
+  "h-8 w-full rounded-md border border-border bg-panel-2 px-2 text-[13px] text-foreground outline-none placeholder:text-muted focus:border-border-strong";
+
+function parseSettings(raw: unknown): CompareSettings | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const value = raw as Record<string, unknown>;
-  const min = Number(value.minExchanges);
+  const r = raw as Record<string, unknown>;
+  const exchangeFees: Record<string, string> = {};
+  if (r.exchangeFees && typeof r.exchangeFees === "object" && !Array.isArray(r.exchangeFees)) {
+    for (const [k, v] of Object.entries(r.exchangeFees as Record<string, unknown>)) {
+      if (typeof v === "string") exchangeFees[k.toLowerCase()] = v;
+    }
+  }
+  const pageSize = r.pageSize === 50 ? 50 : r.pageSize === 100 ? 100 : 25;
   return {
-    search: typeof value.search === "string" ? value.search : DEFAULT_FILTERS.search,
-    minExchanges: Number.isInteger(min) && min >= 1 ? min : DEFAULT_FILTERS.minExchanges,
-    primary: typeof value.primary === "string" ? value.primary : DEFAULT_FILTERS.primary,
+    search: typeof r.search === "string" ? r.search : DEFAULT_SETTINGS.search,
+    defaultFeePct: typeof r.defaultFeePct === "string" ? r.defaultFeePct : DEFAULT_SETTINGS.defaultFeePct,
+    exchangeFees,
+    depthMode: typeof r.depthMode === "boolean" ? r.depthMode : DEFAULT_SETTINGS.depthMode,
+    modalUsd: typeof r.modalUsd === "string" ? r.modalUsd : DEFAULT_SETTINGS.modalUsd,
+    showFundingOpen: typeof r.showFundingOpen === "boolean" ? r.showFundingOpen : true,
+    showFundingSuspended: typeof r.showFundingSuspended === "boolean" ? r.showFundingSuspended : true,
+    showFundingUnknown: typeof r.showFundingUnknown === "boolean" ? r.showFundingUnknown : true,
+    showNegative: typeof r.showNegative === "boolean" ? r.showNegative : false,
+    hideContractMismatch:
+      typeof r.hideContractMismatch === "boolean" ? r.hideContractMismatch : DEFAULT_SETTINGS.hideContractMismatch,
+    hideStale: typeof r.hideStale === "boolean" ? r.hideStale : DEFAULT_SETTINGS.hideStale,
+    maxAgeMinutes: typeof r.maxAgeMinutes === "string" ? r.maxAgeMinutes : DEFAULT_SETTINGS.maxAgeMinutes,
+    minSpreadPct: typeof r.minSpreadPct === "string" ? r.minSpreadPct : DEFAULT_SETTINGS.minSpreadPct,
+    minVolumeUsd: typeof r.minVolumeUsd === "string" ? r.minVolumeUsd : DEFAULT_SETTINGS.minVolumeUsd,
+    pageSize,
   };
 }
 
-const CARD_FIELD_OPTIONS = [
-  { id: "price", label: "Harga" },
-  { id: "volume", label: "Volume" },
-  { id: "gap", label: "Gap %" },
-  { id: "bid", label: "Bid" },
-  { id: "ask", label: "Ask" },
-  { id: "bidSize", label: "Bid size" },
-  { id: "askSize", label: "Ask size" },
-  { id: "spread", label: "Spread" },
-  { id: "change24h", label: "24h %" },
-  { id: "funding", label: "Depo/WD" },
-  { id: "fetchedAt", label: "Waktu fetch" },
-] as const;
+function parseOptionalNumber(raw: string): number | null {
+  const trimmed = raw.trim().replace(/,/g, ".");
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
 
-type CardFieldId = (typeof CARD_FIELD_OPTIONS)[number]["id"];
-type CompareCardFields = Record<CardFieldId, boolean>;
+function parsePositiveOrDefault(raw: string, fallback: number): number {
+  const n = parseOptionalNumber(raw);
+  return n != null && n > 0 ? n : fallback;
+}
 
-const DEFAULT_CARD_FIELDS: CompareCardFields = {
-  price: true,
-  volume: true,
-  gap: true,
-  bid: false,
-  ask: false,
-  bidSize: false,
-  askSize: false,
-  spread: false,
-  change24h: false,
-  funding: false,
-  fetchedAt: false,
-};
+function parseNonNegativeOrDefault(raw: string, fallback: number): number {
+  const n = parseOptionalNumber(raw);
+  return n != null && n >= 0 ? n : fallback;
+}
 
-function parseCardFields(raw: unknown): CompareCardFields | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const value = raw as Record<string, unknown>;
-  const next = { ...DEFAULT_CARD_FIELDS };
-  let seen = false;
-  for (const option of CARD_FIELD_OPTIONS) {
-    const flag = value[option.id];
-    if (typeof flag === "boolean") {
-      next[option.id] = flag;
-      seen = true;
+function useCompareSettings() {
+  const [value, setValue] = useState<CompareSettings>(DEFAULT_SETTINGS);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_SETTINGS_KEY);
+      if (raw != null && raw !== "") {
+        const parsed = parseSettings(JSON.parse(raw));
+        if (parsed != null) setValue(parsed);
+      }
+    } catch {
+      // storage rusak atau diblokir
     }
-  }
-  return seen ? next : null;
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    try {
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(value));
+    } catch {
+      // storage penuh atau diblokir
+    }
+  }, [ready, value]);
+
+  return [value, setValue] as const;
 }
 
-function parseColumnVisibility(raw: unknown): ColumnVisibilityState | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const state: ColumnVisibilityState = {};
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === "boolean") state[key] = value;
-  }
-  for (const id of HIDDEN_BY_DEFAULT_COLUMNS) {
-    if (state[id] === undefined) state[id] = false;
-  }
-  for (const id of ALWAYS_VISIBLE_COLUMNS) state[id] = true;
-  return state;
-}
-
-function sortNullsLast(
-  rowA: { getValue: (id: string) => unknown },
-  rowB: { getValue: (id: string) => unknown },
-  columnId: string,
-  desc: boolean,
-): number {
-  const a = rowA.getValue(columnId);
-  const b = rowB.getValue(columnId);
-  if (a == null && b == null) return 0;
-  if (a == null) return desc ? -1 : 1;
-  if (b == null) return desc ? 1 : -1;
-  if (typeof a === "number" && typeof b === "number") return a - b;
-  return String(a).localeCompare(String(b), "en", { numeric: true, sensitivity: "base" });
-}
-
-function isUsdQuote(quote: string): boolean {
-  return quote.trim().toUpperCase() === "USD";
-}
-
-function diffPct(primaryLast: number | null | undefined, otherLast: number | null | undefined): number | null {
-  if (primaryLast == null || otherLast == null) return null;
-  if (!Number.isFinite(primaryLast) || !Number.isFinite(otherLast) || primaryLast <= 0 || otherLast <= 0) {
-    return null;
-  }
-  return ((otherLast - primaryLast) / primaryLast) * 100;
-}
-
-function pctClass(value: number | null): string {
+function pctClass(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "muted";
   if (value > 0) return "up";
   if (value < 0) return "down";
-  return "";
+  return "muted";
 }
 
-type CompareTableRow = {
-  base: string;
-  primary: CompareExchangeCell;
-  others: Array<{ info: CompareExchangeInfo; cell: CompareExchangeCell; diff: number | null }>;
-  exchangeCount: number;
-  otherCount: number;
-  last: number | null;
-  quoteVolume24h: number | null;
-  change24hPct: number | null;
-  bid: number | null;
-  ask: number | null;
-  bidSize: number | null;
-  askSize: number | null;
-  spreadPct: number | null;
-  fundingSort: number | null;
-  pair: string;
-  fetchedAt: string | null;
-  maxAbsDiff: number | null;
-  maxAbsDiffSigned: number | null;
-};
-
-function fundingSortValue(cell: CompareExchangeCell): number | null {
-  const deposit = cell.depositEnabled;
-  const withdraw = cell.withdrawEnabled;
-  if (deposit == null && withdraw == null) return null;
-  const flag = (value: number | null) => (value === 1 ? 2 : value === 0 ? 0 : 1);
-  return flag(deposit) * 3 + flag(withdraw);
+function formatSignedUsd(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "-";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1000) return `${sign}${formatUsdCompact(abs)}`;
+  if (abs >= 1) return `${sign}$${abs.toFixed(2)}`;
+  if (abs >= 0.01) return `${sign}$${abs.toFixed(3)}`;
+  return `${sign}$${abs.toFixed(4)}`;
 }
 
-const features = tableFeatures({
-  columnVisibilityFeature,
-  rowSortingFeature,
-  rowPaginationFeature,
-  sortedRowModel: createSortedRowModel(),
-  paginatedRowModel: createPaginatedRowModel(),
-  columnMeta: metaHelper<{ align?: "left" | "right"; sticky?: "coin" }>(),
-  tableMeta: metaHelper<{ cardFields: CompareCardFields }>(),
-});
-
-const columnHelper = createColumnHelper<typeof features, CompareTableRow>();
-
-const ExternalLinkIcon = memo(function ExternalLinkIcon() {
+function ExternalLinkIcon() {
   return (
-    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="opacity-60">
+    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
       <path
-        d="M14 5h5v5M19 5l-9 9"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        fill="currentColor"
+        d="M9.5 2a.5.5 0 0 0 0 1h2.793L6.646 8.646a.5.5 0 1 0 .708.708L13 3.707V6.5a.5.5 0 0 0 1 0v-4a.5.5 0 0 0-.5-.5h-4ZM4 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9.5a.5.5 0 0 0-1 0V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2.5a.5.5 0 0 0 0-1H4Z"
       />
-      <path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" stroke="currentColor" strokeWidth="2" />
     </svg>
   );
-});
-
-const CoinCell = memo(function CoinCell({ row }: { row: CompareTableRow }) {
-  const href = getSpotUrl(row.primary.exchange, row.primary.base, row.primary.quote, row.primary.rawSymbol, row.primary.contracts);
-  const text = <span className="font-medium text-foreground">{row.base}</span>;
-  if (!href) return text;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-center gap-1 text-foreground hover:opacity-80"
-      title={`Buka ${row.primary.base}/${row.primary.quote} di ${row.primary.exchange}`}
-    >
-      {text}
-      <ExternalLinkIcon />
-    </a>
-  );
-});
-
-const PriceWithQuote = memo(function PriceWithQuote({ last, quote, href, title }: { last: number | null; quote: string; href: string | null; title?: string }) {
-  const price = formatPrice(last);
-  const tag = isUsdQuote(quote) ? <span className="muted ml-1 text-[10px] font-normal">USD</span> : null;
-  const content = (
-    <>
-      <span className="num">{price}</span>
-      {tag}
-    </>
-  );
-  if (!href) return <span className="inline-flex items-baseline">{content}</span>;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="inline-flex items-baseline hover:opacity-80"
-      title={title}
-    >
-      {content}
-    </a>
-  );
-});
-
-function ChipField({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="compare-chip-field">
-      <span className="compare-chip-field-label">{label}</span>
-      <span className="compare-chip-field-value">{children}</span>
-    </div>
-  );
 }
 
-function PopoverRow({
-  label,
-  children,
-  className,
-}: {
-  label: string;
-  children: ReactNode;
-  className?: string;
-}) {
+function BookIcon() {
   return (
-    <tr>
-      <th scope="row">{label}</th>
-      <td className={className}>{children}</td>
-    </tr>
-  );
-}
-
-const ExchangeChip = memo(function ExchangeChip({
-  item,
-  fields,
-}: {
-  item: CompareTableRow["others"][number];
-  fields: CompareCardFields;
-}) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState({ top: 0, left: 0, placeAbove: false });
-  const href = getSpotUrl(item.cell.exchange, item.cell.base, item.cell.quote, item.cell.rawSymbol, item.cell.contracts);
-  const cell = item.cell;
-
-  const showPopover = () => {
-    const el = bodyRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const width = 260;
-    const estimatedHeight = 280;
-    const margin = 8;
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const placeAbove = spaceBelow < estimatedHeight && rect.top > spaceBelow;
-    let left = rect.left;
-    if (left + width > window.innerWidth - margin) {
-      left = Math.max(margin, window.innerWidth - width - margin);
-    }
-    if (left < margin) left = margin;
-    setPos({
-      top: placeAbove ? rect.top - 6 : rect.bottom + 6,
-      left,
-      placeAbove,
-    });
-    setOpen(true);
-  };
-
-  const hidePopover = () => setOpen(false);
-
-  return (
-    <div className="compare-chip">
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="compare-chip-link"
-          title={`Buka ${cell.base}/${cell.quote} di ${item.info.name}`}
-          aria-label={`Buka ${cell.base}/${cell.quote} di ${item.info.name}`}
-          onMouseEnter={(event) => {
-            event.stopPropagation();
-            hidePopover();
-          }}
-          onMouseOver={(event) => event.stopPropagation()}
-          onPointerEnter={(event) => {
-            event.stopPropagation();
-            hidePopover();
-          }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <ExternalLinkIcon />
-        </a>
-      ) : null}
-      <div
-        ref={bodyRef}
-        className="compare-chip-body"
-        onMouseEnter={showPopover}
-        onMouseLeave={hidePopover}
-      >
-        <div className="text-[10px] font-medium uppercase tracking-wide text-muted">{item.info.name}</div>
-        {fields.price ? <PriceWithQuote last={cell.last} quote={cell.quote} href={null} /> : null}
-        {fields.volume ? <div className="num muted text-[11px]">{formatUsdCompact(cell.quoteVolume24h)}</div> : null}
-        {fields.gap ? (
-          <div className={`num text-[11px] font-medium ${pctClass(item.diff)}`}>
-            {item.diff == null ? "-" : formatPct(item.diff)}
-          </div>
-        ) : null}
-        {fields.bid ? (
-          <ChipField label="Bid">
-            <span className="num">{formatPrice(cell.bid)}</span>
-          </ChipField>
-        ) : null}
-        {fields.ask ? (
-          <ChipField label="Ask">
-            <span className="num">{formatPrice(cell.ask)}</span>
-          </ChipField>
-        ) : null}
-        {fields.bidSize ? (
-          <ChipField label="Bid size">
-            <span className="num">{formatAmountCompact(cell.bidSize)}</span>
-          </ChipField>
-        ) : null}
-        {fields.askSize ? (
-          <ChipField label="Ask size">
-            <span className="num">{formatAmountCompact(cell.askSize)}</span>
-          </ChipField>
-        ) : null}
-        {fields.spread ? (
-          <ChipField label="Spread">
-            <span className="num">{formatPct(cell.spreadPct)}</span>
-          </ChipField>
-        ) : null}
-        {fields.change24h ? (
-          <ChipField label="24h">
-            <span className={`num ${pctClass(cell.change24hPct)}`}>{formatPct(cell.change24hPct)}</span>
-          </ChipField>
-        ) : null}
-        {fields.funding ? (
-          <ChipField label="Depo/WD">
-            <FundingIcons
-              depositEnabled={cell.depositEnabled}
-              withdrawEnabled={cell.withdrawEnabled}
-              chainstatusRaw={cell.chainstatusRaw}
-            />
-          </ChipField>
-        ) : null}
-        {fields.fetchedAt ? (
-          <ChipField label="Fetch">
-            {formatWibShort(cell.fetchedAt)}
-          </ChipField>
-        ) : null}
-      </div>
-      {open && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="compare-chip-pop"
-              style={{
-                top: pos.top,
-                left: pos.left,
-                transform: pos.placeAbove ? "translateY(-100%)" : undefined,
-              }}
-              role="tooltip"
-            >
-              <div className="compare-chip-pop-title">{item.info.name}</div>
-              <table className="compare-chip-pop-table">
-                <tbody>
-                  <PopoverRow label="Bid">
-                    <span className="num">{formatPrice(cell.bid)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="Ask">
-                    <span className="num">{formatPrice(cell.ask)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="Bid size">
-                    <span className="num">{formatAmountCompact(cell.bidSize)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="Ask size">
-                    <span className="num">{formatAmountCompact(cell.askSize)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="Spread">
-                    <span className="num">{formatPct(cell.spreadPct)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="Last vs mid">
-                    <span className="num">{formatPct(cell.lastVsMidPct)}</span>
-                  </PopoverRow>
-                  <PopoverRow label="24h %" className={`num ${pctClass(cell.change24hPct)}`}>
-                    {formatPct(cell.change24hPct)}
-                  </PopoverRow>
-                  <PopoverRow label="Waktu fetch">{formatWibShort(cell.fetchedAt)}</PopoverRow>
-                  <PopoverRow label="Depo/WD">
-                    <span className="compare-chip-pop-icons">
-                      <FundingIcons
-                        depositEnabled={cell.depositEnabled}
-                        withdrawEnabled={cell.withdrawEnabled}
-                        chainstatusRaw={cell.chainstatusRaw}
-                      />
-                    </span>
-                  </PopoverRow>
-                  <PopoverRow label="Pair">{`${cell.base}/${cell.quote}`}</PopoverRow>
-                  {cell.stale === 1 ? (
-                    <PopoverRow label="Stale" className="down">
-                      ya
-                    </PopoverRow>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>,
-            document.body,
-          )
-        : null}
-    </div>
-  );
-});
-
-const OthersCell = memo(function OthersCell({
-  row,
-  fields,
-}: {
-  row: CompareTableRow;
-  fields: CompareCardFields;
-}) {
-  if (row.others.length === 0) return <span className="muted">-</span>;
-  return (
-    <div className="flex flex-wrap gap-1.5 py-1">
-      {row.others.map((item) => (
-        <ExchangeChip key={item.info.id} item={item} fields={fields} />
-      ))}
-    </div>
-  );
-});
-
-const columns = columnHelper.columns([
-  columnHelper.accessor("base", {
-    header: "Coin",
-    enableHiding: false,
-    meta: { align: "left", sticky: "coin" },
-    cell: (info) => <CoinCell row={info.row.original} />,
-  }),
-  columnHelper.accessor("last", {
-    header: "Last",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => {
-      const row = info.row.original;
-      return (
-        <PriceWithQuote
-          last={row.last}
-          quote={row.primary.quote}
-          href={null}
-        />
-      );
-    },
-  }),
-  columnHelper.accessor("quoteVolume24h", {
-    header: "Vol USD 24h",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatUsdCompact(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("change24hPct", {
-    header: "24h %",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => {
-      const value = info.getValue();
-      return <span className={`num ${pctClass(value)}`}>{formatPct(value)}</span>;
-    },
-  }),
-  columnHelper.accessor("bid", {
-    header: "Bid",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatPrice(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("ask", {
-    header: "Ask",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatPrice(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("bidSize", {
-    header: "Bid size",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatAmountCompact(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("askSize", {
-    header: "Ask size",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatAmountCompact(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("spreadPct", {
-    header: "Spread",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => <span className="num">{formatPct(info.getValue())}</span>,
-  }),
-  columnHelper.accessor("fundingSort", {
-    id: "funding",
-    header: "Depo/WD",
-    sortDescFirst: true,
-    meta: { align: "left" },
-    cell: (info) => {
-      const cell = info.row.original.primary;
-      return (
-        <FundingIcons
-          depositEnabled={cell.depositEnabled}
-          withdrawEnabled={cell.withdrawEnabled}
-          chainstatusRaw={cell.chainstatusRaw}
-        />
-      );
-    },
-  }),
-  columnHelper.accessor("pair", {
-    header: "Pair",
-    meta: { align: "left" },
-    cell: (info) => <span>{info.getValue()}</span>,
-  }),
-  columnHelper.accessor("fetchedAt", {
-    header: "Waktu fetch",
-    sortDescFirst: true,
-    meta: { align: "left" },
-    cell: (info) => {
-      const value = info.getValue();
-      if (!value) return <span className="muted">-</span>;
-      return (
-        <span className="num muted whitespace-nowrap" title={formatWib(value)}>
-          {formatWibShort(value)}
-        </span>
-      );
-    },
-  }),
-  columnHelper.accessor("otherCount", {
-    header: "Ada juga di",
-    sortDescFirst: true,
-    enableHiding: false,
-    meta: { align: "left" },
-    cell: (info) => (
-      <OthersCell
-        row={info.row.original}
-        fields={info.table.options.meta?.cardFields ?? DEFAULT_CARD_FIELDS}
+    <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M2.5 3.5h4.5v1.5H2.5V3.5Zm0 3.75h7v1.5h-7v-1.5Zm0 3.75h11v1.5h-11V11Zm6.5-7.5h4.5V5H9V3.5Z"
       />
-    ),
-  }),
-  columnHelper.accessor("maxAbsDiff", {
-    header: "Max Δ",
-    sortDescFirst: true,
-    meta: { align: "right" },
-    cell: (info) => {
-      const signed = info.row.original.maxAbsDiffSigned;
-      if (signed == null) return <span className="muted">-</span>;
-      return <span className={`num ${pctClass(signed)}`}>{formatPct(signed)}</span>;
-    },
-  }),
-]);
+    </svg>
+  );
+}
 
-function buildRows(
-  byBase: Record<string, CompareCoinEntry>,
-  exchanges: CompareExchangeInfo[],
-  primaryId: string,
-): CompareTableRow[] {
-  const othersInfo = exchanges.filter((item) => item.id !== primaryId);
-  const rows: CompareTableRow[] = [];
-  for (const entry of Object.values(byBase)) {
-    const primary = entry.exchanges[primaryId];
-    if (!primary) continue;
-    const others = othersInfo
-      .map((info) => {
-        const cell = entry.exchanges[info.id];
-        if (!cell) return null;
-        return { info, cell, diff: diffPct(primary.last, cell.last) };
-      })
-      .filter((item): item is CompareTableRow["others"][number] => item != null);
-
-    others.sort((a, b) => {
-      const aAbs = a.diff == null ? null : Math.abs(a.diff);
-      const bAbs = b.diff == null ? null : Math.abs(b.diff);
-      if (aAbs == null && bAbs == null) return 0;
-      if (aAbs == null) return 1;
-      if (bAbs == null) return -1;
-      return bAbs - aAbs;
-    });
-
-    let maxAbsDiff: number | null = null;
-    let maxAbsDiffSigned: number | null = null;
-    for (const item of others) {
-      if (item.diff == null) continue;
-      const abs = Math.abs(item.diff);
-      if (maxAbsDiff == null || abs > maxAbsDiff) {
-        maxAbsDiff = abs;
-        maxAbsDiffSigned = item.diff;
-      }
-    }
-
-    rows.push({
-      base: entry.base,
-      primary,
-      others,
-      exchangeCount: 1 + others.length,
-      otherCount: others.length,
-      last: primary.last,
-      quoteVolume24h: primary.quoteVolume24h,
-      change24hPct: primary.change24hPct,
-      bid: primary.bid,
-      ask: primary.ask,
-      bidSize: primary.bidSize,
-      askSize: primary.askSize,
-      spreadPct: primary.spreadPct,
-      fundingSort: fundingSortValue(primary),
-      pair: `${primary.base}/${primary.quote}`,
-      fetchedAt: primary.fetchedAt,
-      maxAbsDiff,
-      maxAbsDiffSigned,
-    });
+function LegBadge({ label, status }: { label: string; status: 0 | 1 | null }) {
+  if (status === 1) {
+    return (
+      <span className="compare-chip-badge badge-ok" title={`${label}: buka`}>
+        {label}
+      </span>
+    );
   }
-  return rows;
+  if (status === 0) {
+    return (
+      <span className="compare-chip-badge badge-bad" title={`${label}: suspend / tutup`}>
+        {label} suspend
+      </span>
+    );
+  }
+  return (
+    <span className="compare-chip-badge badge-warn" title={`${label}: status belum diketahui`}>
+      {label}?
+    </span>
+  );
+}
+
+function RouteLegCell({
+  side,
+  exchangeId,
+  exchangeName,
+  price,
+  base,
+  quote,
+  rawSymbol,
+  contracts,
+  fundingLabel,
+  fundingStatus,
+  onOpenOrderBook,
+}: {
+  side: "ask" | "bid";
+  exchangeId: string;
+  exchangeName: string;
+  price: number;
+  base: string;
+  quote: string;
+  rawSymbol: string;
+  contracts: CompareRoute["buy"]["contracts"];
+  fundingLabel: "WD" | "Depo";
+  fundingStatus: 0 | 1 | null;
+  onOpenOrderBook: (exchange: string, rawSymbol: string, exchangeName: string) => void;
+}) {
+  const spotUrl = getSpotUrl(exchangeId, base, quote, rawSymbol, contracts);
+  return (
+    <div className="compare-leg">
+      <div className="compare-leg-head">
+        <span className="compare-leg-ex">{exchangeName}</span>
+        {spotUrl ? (
+          <a
+            href={spotUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="compare-leg-icon"
+            title={`Buka ${base}/${quote} di ${exchangeName}`}
+            aria-label={`Buka ${base}/${quote} di ${exchangeName}`}
+          >
+            <ExternalLinkIcon />
+          </a>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => onOpenOrderBook(exchangeId, rawSymbol, exchangeName)}
+          className="compare-leg-icon"
+          title={`Lihat orderbook ${rawSymbol} di ${exchangeName}`}
+          aria-label={`Orderbook ${rawSymbol} di ${exchangeName}`}
+        >
+          <BookIcon />
+        </button>
+        <LegBadge label={fundingLabel} status={fundingStatus} />
+      </div>
+      <div className="compare-leg-price">
+        <span className="num text-[13px] text-foreground">{formatPrice(price)}</span>
+        <span className="muted text-[10px]">
+          {side} · {rawSymbol}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadges({ route }: { route: CompareRoute }) {
+  return (
+    <span className="compare-coin-badges">
+      {route.buyWithdraw === 0 ? (
+        <span className="compare-chip-badge badge-bad" title="Withdraw di exchange beli sedang suspend">
+          WD suspend
+        </span>
+      ) : null}
+      {route.sellDeposit === 0 ? (
+        <span className="compare-chip-badge badge-bad" title="Deposit di exchange jual sedang suspend">
+          Depo suspend
+        </span>
+      ) : null}
+      {route.fundingUnknown ? (
+        <span className="compare-chip-badge badge-warn" title="Status Depo atau WD belum diketahui">
+          Status?
+        </span>
+      ) : null}
+      {route.contractStatus === "match" ? (
+        <span className="compare-chip-badge badge-ok" title="Kontrak cocok di kedua exchange">
+          Kontrak
+        </span>
+      ) : null}
+      {route.contractStatus === "mismatch" ? (
+        <span className="compare-chip-badge badge-bad" title="Kontrak tidak cocok antara exchange beli & jual">
+          Beda kontrak
+        </span>
+      ) : null}
+      {route.isStale ? (
+        <span className="compare-chip-badge badge-warn" title="Data ticker stale">
+          Stale
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 export function ComparePage() {
+  const { isDisabled, syncExchanges, allExchanges } = useExchangeSettings();
+  const { openOrderBook, orderBookModal } = useOrderBook();
+
   const [exchanges, setExchanges] = useState<CompareExchangeInfo[]>([]);
   const [byBase, setByBase] = useState<Record<string, CompareCoinEntry>>({});
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
-  const [filters, setFilters] = usePersistedState<CompareFilters>(
-    FILTERS_KEY,
-    DEFAULT_FILTERS,
-    parseCompareFilters,
-  );
-  const [cardFields, setCardFields] = usePersistedState<CompareCardFields>(
-    CARD_FIELDS_KEY,
-    DEFAULT_CARD_FIELDS,
-    parseCardFields,
-  );
-  const [columnVisibility, setColumnVisibility] = usePersistedState<ColumnVisibilityState>(
-    COLUMN_VISIBILITY_KEY,
-    DEFAULT_COLUMN_VISIBILITY,
-    parseColumnVisibility,
-  );
-  const [columnVisibilityOpen, setColumnVisibilityOpen] = useState(false);
-  const visibilityRef = useRef<HTMLDivElement>(null);
-  const [sorting, setSorting] = useState<SortingState>([{ id: "otherCount", desc: true }]);
-  const sortingRef = useRef(sorting);
-  sortingRef.current = sorting;
+  const [expandedCoins, setExpandedCoins] = useState<Set<string>>(new Set());
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({
+    key: "netProfitPct",
+    desc: true,
+  });
+  const [pageIndex, setPageIndex] = useState(0);
+  const [feePopoverOpen, setFeePopoverOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const feePopoverRef = useRef<HTMLDivElement>(null);
+  const filtersRef = useRef<HTMLDivElement>(null);
+
+  const [settings, setSettings] = useCompareSettings();
+
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!feePopoverOpen && !filtersOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (feePopoverOpen && feePopoverRef.current && !feePopoverRef.current.contains(target)) {
+        setFeePopoverOpen(false);
+      }
+      if (filtersOpen && filtersRef.current && !filtersRef.current.contains(target)) {
+        setFiltersOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setFeePopoverOpen(false);
+        setFiltersOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [feePopoverOpen, filtersOpen]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -702,100 +364,444 @@ export function ComparePage() {
       const response = await fetch("/api/compare", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || "Gagal memuat perbandingan");
-      setExchanges(sortByExchangeName(data.exchanges ?? [], (item) => item.name || item.id));
+      const sorted: CompareExchangeInfo[] = sortByExchangeName(
+        data.exchanges ?? [],
+        (item) => item.name || item.id,
+      );
+      setExchanges(sorted);
       setByBase(data.byBase ?? {});
+      syncExchanges(sorted.map((item) => ({ id: item.id, name: item.name, count: item.pairCount })));
       setBanner(null);
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [syncExchanges]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const primaryId = useMemo(() => {
-    if (exchanges.length === 0) return "";
-    if (filters.primary && exchanges.some((item) => item.id === filters.primary)) return filters.primary;
-    return exchanges[0]!.id;
-  }, [exchanges, filters.primary]);
-
-  const maxExchanges = Math.max(1, exchanges.length);
-  const minExchanges = Math.min(Math.max(1, filters.minExchanges), maxExchanges);
-
-  const allRows = useMemo(() => buildRows(byBase, exchanges, primaryId), [byBase, exchanges, primaryId]);
-
-  const visibleRows = useMemo(() => {
-    const needle = filters.search.trim().toLowerCase();
-    return allRows.filter((row) => {
-      if (row.exchangeCount < minExchanges) return false;
-      if (needle && !row.base.toLowerCase().includes(needle)) return false;
-      return true;
-    });
-  }, [allRows, filters.search, minExchanges]);
-
-  const sortFn = useMemo(
-    () =>
-      (
-        rowA: { getValue: (id: string) => unknown },
-        rowB: { getValue: (id: string) => unknown },
-        columnId: string,
-      ) => {
-        const desc = sortingRef.current.find((item) => item.id === columnId)?.desc ?? false;
-        return sortNullsLast(rowA, rowB, columnId, desc);
-      },
-    [],
+  const visibleExchanges = useMemo(
+    () => exchanges.filter((item) => !isDisabled(item.id)),
+    [exchanges, isDisabled],
   );
 
-  useEffect(() => {
-    if (!columnVisibilityOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (visibilityRef.current && !visibilityRef.current.contains(target)) {
-        setColumnVisibilityOpen(false);
+  const activeExchangeIds = useMemo(
+    () => new Set(visibleExchanges.map((item) => item.id.toLowerCase())),
+    [visibleExchanges],
+  );
+
+  const exchangeNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const item of exchanges) map[item.id.toLowerCase()] = item.name || item.id;
+    return map;
+  }, [exchanges]);
+
+  const defaultFeePct = parseNonNegativeOrDefault(settings.defaultFeePct, 0.1);
+  const modalUsd = parsePositiveOrDefault(settings.modalUsd, 100);
+
+  const numericExchangeFees = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [id, raw] of Object.entries(settings.exchangeFees)) {
+      const parsed = parseOptionalNumber(raw);
+      if (parsed != null && parsed >= 0) out[id.toLowerCase()] = parsed;
+    }
+    return out;
+  }, [settings.exchangeFees]);
+
+  const safetyFilters = useMemo<CompareSafetyFilters>(
+    () => ({
+      hideContractMismatch: settings.hideContractMismatch,
+      hideStale: settings.hideStale,
+      maxAgeMinutes: parseOptionalNumber(settings.maxAgeMinutes),
+      minSpreadPct: parseOptionalNumber(settings.minSpreadPct),
+      minVolumeUsd: parseOptionalNumber(settings.minVolumeUsd),
+    }),
+    [
+      settings.hideContractMismatch,
+      settings.hideStale,
+      settings.maxAgeMinutes,
+      settings.minSpreadPct,
+      settings.minVolumeUsd,
+    ],
+  );
+
+  const coinGroups = useMemo(
+    () =>
+      computeCompareCoinGroups({
+        byBase,
+        activeExchangeIds,
+        exchangeNames,
+        defaultFeePct,
+        exchangeFees: numericExchangeFees,
+        modalUsd,
+        filters: safetyFilters,
+        nowMs,
+      }),
+    [byBase, activeExchangeIds, exchangeNames, defaultFeePct, numericExchangeFees, modalUsd, safetyFilters, nowMs],
+  );
+
+  const searchedGroups = useMemo(() => {
+    const needle = settings.search.trim().toLowerCase();
+    if (!needle) return coinGroups;
+    return coinGroups.filter((group) => {
+      if (group.base.toLowerCase().includes(needle)) return true;
+      const allRoutes = [group.bestRoute, ...group.otherRoutes];
+      return allRoutes.some(
+        (route) =>
+          route.buyExchangeName.toLowerCase().includes(needle) ||
+          route.sellExchangeName.toLowerCase().includes(needle) ||
+          route.buy.exchange.toLowerCase().includes(needle) ||
+          route.sell.exchange.toLowerCase().includes(needle) ||
+          route.buy.rawSymbol.toLowerCase().includes(needle) ||
+          route.sell.rawSymbol.toLowerCase().includes(needle),
+      );
+    });
+  }, [coinGroups, settings.search]);
+
+  const statusCounts = useMemo(() => {
+    const counts = { open: 0, suspended: 0, unknown: 0 };
+    for (const group of searchedGroups) {
+      counts[group.bestRoute.fundingStatus] += 1;
+    }
+    return counts;
+  }, [searchedGroups]);
+
+  const statusVisibleGroups = useMemo(() => {
+    return searchedGroups.filter((group) => {
+      const status = group.bestRoute.fundingStatus;
+      if (status === "open") return settings.showFundingOpen;
+      if (status === "suspended") return settings.showFundingSuspended;
+      return settings.showFundingUnknown;
+    });
+  }, [searchedGroups, settings.showFundingOpen, settings.showFundingSuspended, settings.showFundingUnknown]);
+
+  const negativeCount = useMemo(
+    () => statusVisibleGroups.filter((group) => group.bestRoute.netProfitPct < 0).length,
+    [statusVisibleGroups],
+  );
+
+  const visibleCoinGroups = useMemo(() => {
+    if (settings.showNegative) return statusVisibleGroups;
+    return statusVisibleGroups.filter((group) => group.bestRoute.netProfitPct >= 0);
+  }, [statusVisibleGroups, settings.showNegative]);
+
+  const preSortedGroups = useMemo(() => {
+    if (sort.key === "depthProfitPct" || sort.key === "maxFillableUsd") {
+      return [...visibleCoinGroups].sort((a, b) => b.bestRoute.netProfitPct - a.bestRoute.netProfitPct);
+    }
+    const list = [...visibleCoinGroups];
+    const valueOf = (g: CompareCoinGroup): string | number | null => {
+      switch (sort.key) {
+        case "base":
+          return g.base;
+        case "grossSpreadPct":
+          return g.bestRoute.grossSpreadPct;
+        case "netProfitPct":
+          return g.bestRoute.netProfitPct;
+        case "volume":
+          return g.bestRoute.minVolumeUsd;
+        case "age":
+          return g.bestRoute.ageMs;
+        case "routes":
+          return g.totalRoutes;
+        default:
+          return null;
       }
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setColumnVisibilityOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [columnVisibilityOpen]);
+    list.sort((a, b) => {
+      const av = valueOf(a);
+      const bv = valueOf(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "number" && typeof bv === "number") {
+        return sort.desc ? bv - av : av - bv;
+      }
+      const cmp = String(av).localeCompare(String(bv), "en", { numeric: true, sensitivity: "base" });
+      return sort.desc ? -cmp : cmp;
+    });
+    return list;
+  }, [visibleCoinGroups, sort]);
 
-  const table = useTable({
-    features,
-    columns,
-    data: visibleRows,
-    getRowId: (row) => row.base.toUpperCase(),
-    enableMultiSort: true,
-    enableSortingRemoval: false,
-    state: { sorting, columnVisibility },
-    onSortingChange: setSorting,
-    onColumnVisibilityChange: setColumnVisibility,
-    initialState: { pagination: { pageIndex: 0, pageSize: 50 } },
-    defaultColumn: { sortFn },
-    meta: { cardFields },
-  });
+  const totalCount = preSortedGroups.length;
+  const pageCount = Math.max(1, Math.ceil(totalCount / settings.pageSize));
+  const safePageIndex = Math.min(pageIndex, pageCount - 1);
 
-  const hideableColumns = table.getAllLeafColumns().filter((column) => column.getCanHide());
-
-  const tableRef = useRef(table);
-  tableRef.current = table;
   useEffect(() => {
-    tableRef.current.setPageIndex(0);
-  }, [filters.search, minExchanges, primaryId]);
+    setPageIndex(0);
+  }, [
+    settings.search,
+    settings.showFundingOpen,
+    settings.showFundingSuspended,
+    settings.showFundingUnknown,
+    settings.showNegative,
+    settings.hideContractMismatch,
+    settings.hideStale,
+    settings.maxAgeMinutes,
+    settings.minSpreadPct,
+    settings.minVolumeUsd,
+    settings.pageSize,
+    activeExchangeIds,
+  ]);
 
-  const filteredCount = visibleRows.length;
-  const { pageIndex, pageSize } = table.state.pagination;
-  const from = filteredCount === 0 ? 0 : pageIndex * pageSize + 1;
-  const to = Math.min(filteredCount, (pageIndex + 1) * pageSize);
-  const pageCount = table.getPageCount();
+  const pageGroups = useMemo(() => {
+    const start = safePageIndex * settings.pageSize;
+    return preSortedGroups.slice(start, start + settings.pageSize);
+  }, [preSortedGroups, safePageIndex, settings.pageSize]);
+
+  const visibleDepthPairs = useMemo<CompareDepthPair[]>(() => {
+    if (!settings.depthMode) return [];
+    const pairs: CompareDepthPair[] = [];
+    for (const group of pageGroups) {
+      pairs.push({ exchange: group.bestRoute.buy.exchange, rawSymbol: group.bestRoute.buy.rawSymbol });
+      pairs.push({ exchange: group.bestRoute.sell.exchange, rawSymbol: group.bestRoute.sell.rawSymbol });
+      if (expandedCoins.has(group.base)) {
+        for (const route of group.otherRoutes) {
+          pairs.push({ exchange: route.buy.exchange, rawSymbol: route.buy.rawSymbol });
+          pairs.push({ exchange: route.sell.exchange, rawSymbol: route.sell.rawSymbol });
+        }
+      }
+    }
+    return pairs;
+  }, [settings.depthMode, pageGroups, expandedCoins]);
+
+  const { getEntry: getDepthEntry, progress: depthProgress, refresh: refreshDepth } = useCompareDepth(
+    visibleDepthPairs,
+    settings.depthMode,
+  );
+
+  const getRouteDepth = useCallback(
+    (route: CompareRoute): DepthRouteMetrics | null => {
+      if (!settings.depthMode) return null;
+      const buyEntry = getDepthEntry(route.buy.exchange, route.buy.rawSymbol);
+      const sellEntry = getDepthEntry(route.sell.exchange, route.sell.rawSymbol);
+      if (!buyEntry || !sellEntry) return null;
+      if (!buyEntry.ok || !sellEntry.ok) {
+        return computeDepthRouteMetrics({
+          buyAsks: undefined,
+          sellBids: undefined,
+          modalUsd,
+          buyFeePct: route.buyFeePct,
+          sellFeePct: route.sellFeePct,
+          error: true,
+        });
+      }
+      return computeDepthRouteMetrics({
+        buyAsks: buyEntry.asks,
+        sellBids: sellEntry.bids,
+        modalUsd,
+        buyFeePct: route.buyFeePct,
+        sellFeePct: route.sellFeePct,
+      });
+    },
+    [settings.depthMode, getDepthEntry, modalUsd],
+  );
+
+  const displayedGroups = useMemo(() => {
+    if (!settings.depthMode || (sort.key !== "depthProfitPct" && sort.key !== "maxFillableUsd")) {
+      return pageGroups;
+    }
+    const list = [...pageGroups];
+    list.sort((a, b) => {
+      const da = getRouteDepth(a.bestRoute);
+      const db = getRouteDepth(b.bestRoute);
+      const va =
+        sort.key === "depthProfitPct" ? da?.realisticProfitPct ?? null : da?.maxFillableUsd ?? null;
+      const vb =
+        sort.key === "depthProfitPct" ? db?.realisticProfitPct ?? null : db?.maxFillableUsd ?? null;
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return sort.desc ? vb - va : va - vb;
+    });
+    return list;
+  }, [settings.depthMode, sort, pageGroups, getRouteDepth]);
+
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) =>
+      prev.key === key ? { key, desc: !prev.desc } : { key, desc: key !== "base" && key !== "age" },
+    );
+  };
+
+  const sortMark = (key: SortKey) => (sort.key === key ? (sort.desc ? "↓" : "↑") : "");
+
+  const sortTh = (key: SortKey, label: ReactNode, align: "left" | "right" = "right", className = "") => (
+    <th key={key} className={`${align === "right" ? "text-right" : "text-left"}${className ? ` ${className}` : ""}`}>
+      <button
+        type="button"
+        onClick={() => toggleSort(key)}
+        className={`inline-flex items-center gap-1 ${align === "right" ? "w-full justify-end" : ""}`}
+      >
+        <span>{label}</span>
+        <span className="text-[10px] text-foreground">{sortMark(key)}</span>
+      </button>
+    </th>
+  );
+
+  const toggleExpand = (base: string) => {
+    setExpandedCoins((prev) => {
+      const next = new Set(prev);
+      if (next.has(base)) next.delete(base);
+      else next.add(base);
+      return next;
+    });
+  };
+
+  const customFeeCount = Object.keys(numericExchangeFees).length;
+  const colSpan = settings.depthMode ? 10 : 7;
+  const from = totalCount === 0 ? 0 : safePageIndex * settings.pageSize + 1;
+  const to = Math.min(totalCount, (safePageIndex + 1) * settings.pageSize);
+
+  const activeFilterCount =
+    Number(settings.hideContractMismatch !== DEFAULT_SETTINGS.hideContractMismatch) +
+    Number(settings.hideStale !== DEFAULT_SETTINGS.hideStale) +
+    Number(settings.maxAgeMinutes.trim() !== "") +
+    Number(settings.minSpreadPct.trim() !== "") +
+    Number(settings.minVolumeUsd.trim() !== "");
+
+  const resetFilters = () => {
+    setSettings((prev) => ({
+      ...prev,
+      hideContractMismatch: true,
+      hideStale: true,
+      maxAgeMinutes: "",
+      minSpreadPct: "",
+      minVolumeUsd: "",
+    }));
+  };
+
+  const toggleFundingStatus = (key: "showFundingOpen" | "showFundingSuspended" | "showFundingUnknown") => {
+    setSettings((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (!next.showFundingOpen && !next.showFundingSuspended && !next.showFundingUnknown) {
+        return prev;
+      }
+      return next;
+    });
+  };
+
+  const renderRouteCells = (route: CompareRoute) => {
+    const depth = getRouteDepth(route);
+    const totalFeePct = route.buyFeePct + route.sellFeePct;
+    const ageTooOld = route.ageMs != null && route.ageMs > 15 * 60_000;
+
+    return (
+      <>
+        <td className="col-buy">
+          <RouteLegCell
+            side="ask"
+            exchangeId={route.buy.exchange}
+            exchangeName={route.buyExchangeName}
+            price={route.buyAsk}
+            base={route.buy.base}
+            quote={route.buy.quote}
+            rawSymbol={route.buy.rawSymbol}
+            contracts={route.buy.contracts}
+            fundingLabel="WD"
+            fundingStatus={route.buyWithdraw}
+            onOpenOrderBook={(ex, sym, name) => void openOrderBook(ex, sym, name)}
+          />
+        </td>
+        <td className="col-sell">
+          <RouteLegCell
+            side="bid"
+            exchangeId={route.sell.exchange}
+            exchangeName={route.sellExchangeName}
+            price={route.sellBid}
+            base={route.sell.base}
+            quote={route.sell.quote}
+            rawSymbol={route.sell.rawSymbol}
+            contracts={route.sell.contracts}
+            fundingLabel="Depo"
+            fundingStatus={route.sellDeposit}
+            onOpenOrderBook={(ex, sym, name) => void openOrderBook(ex, sym, name)}
+          />
+        </td>
+        <td className="col-spread num whitespace-nowrap text-right">
+          <div className={pctClass(route.grossSpreadPct)}>{formatPct(route.grossSpreadPct)}</div>
+        </td>
+        <td className="col-profit num whitespace-nowrap text-right">
+          <div className={pctClass(route.netProfitPct)}>{formatPct(route.netProfitPct)}</div>
+          <span className="compare-subline">
+            <span className={pctClass(route.estProfitUsd)}>{formatSignedUsd(route.estProfitUsd)}</span>
+            {` · fee ${totalFeePct.toFixed(2).replace(/\.00$/, "")}%`}
+          </span>
+        </td>
+        {settings.depthMode ? (
+          <>
+            <td className="col-vwap num whitespace-nowrap text-right">
+              {depth == null ? (
+                <span className="muted text-[12px]">Memuat...</span>
+              ) : depth.error ? (
+                <span className="down text-[12px]">Gagal</span>
+              ) : (
+                <>
+                  <div className="text-foreground">{formatPrice(depth.vwapBuy)}</div>
+                  <span className="compare-subline">{formatPrice(depth.vwapSell)}</span>
+                </>
+              )}
+            </td>
+            <td className="col-depth-profit num whitespace-nowrap text-right">
+              {depth == null ? (
+                <span className="muted text-[12px]">Memuat...</span>
+              ) : depth.error || depth.realisticProfitUsd == null ? (
+                <span className="muted text-[12px]">-</span>
+              ) : (
+                <>
+                  <div className={pctClass(depth.realisticProfitUsd)}>
+                    {formatSignedUsd(depth.realisticProfitUsd)} ({formatPct(depth.realisticProfitPct)})
+                  </div>
+                  <span className={`compare-subline ${depth.partial ? "text-warn" : ""}`}>
+                    {depth.partial
+                      ? `Isi ${formatUsdCompact(depth.filledModalUsd)}/${formatUsdCompact(depth.modalUsd)}`
+                      : `Modal ${formatUsdCompact(depth.modalUsd)}`}
+                  </span>
+                </>
+              )}
+            </td>
+            <td className="col-fill num whitespace-nowrap text-right">
+              {depth == null || depth.error ? (
+                <span className="muted text-[12px]">-</span>
+              ) : (
+                <>
+                  <div className="text-foreground">
+                    {depth.maxFillableUsd > 0 ? formatUsdCompact(depth.maxFillableUsd) : "$0"}
+                  </div>
+                  <span className="compare-subline">
+                    Net {depth.maxNetFillableUsd > 0 ? formatUsdCompact(depth.maxNetFillableUsd) : "$0"}
+                  </span>
+                </>
+              )}
+            </td>
+          </>
+        ) : null}
+        <td
+          className="col-vol num whitespace-nowrap text-right"
+          title={`Vol beli: ${formatUsdCompact(route.buyVolumeUsd)} · Vol jual: ${formatUsdCompact(route.sellVolumeUsd)}`}
+        >
+          <div>{formatUsdCompact(route.minVolumeUsd)}</div>
+          <span className="compare-subline">
+            {formatUsdCompact(route.buyVolumeUsd)} / {formatUsdCompact(route.sellVolumeUsd)}
+          </span>
+        </td>
+        <td
+          className="col-age whitespace-nowrap"
+          title={
+            route.oldestFetchedAt
+              ? `Data terlama: ${formatWib(route.oldestFetchedAt)}`
+              : "Waktu fetch tidak tersedia"
+          }
+        >
+          <span className={`text-[12px] ${ageTooOld ? "text-warn" : "muted"}`}>
+            {formatRelativeId(route.oldestFetchedAt, nowMs)}
+          </span>
+        </td>
+      </>
+    );
+  };
 
   return (
     <div className="app-shell flex h-dvh min-h-0 flex-col overflow-hidden bg-background">
@@ -809,212 +815,426 @@ export function ComparePage() {
         <div className="border-b border-border bg-panel px-4 py-2 text-[13px] text-muted sm:px-5">{banner}</div>
       ) : null}
 
-      <ExchangeMarketBar
-        loading={loading}
-        totalCount={exchanges.reduce((sum, item) => sum + item.pairCount, 0)}
-        items={exchanges.map((exchange) => ({
-          id: exchange.id,
-          name: exchange.name,
-          count: exchange.pairCount,
-          selected: primaryId === exchange.id,
-          onSelect: () => setFilters((prev) => ({ ...prev, primary: exchange.id })),
-        }))}
-      />
-
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background p-3 sm:p-4">
-        <div className="mb-3 flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="compare-toolbar">
           <input
             type="search"
-            value={filters.search}
-            onChange={(event) => setFilters((prev) => ({ ...prev, search: event.target.value }))}
-            placeholder="Cari coin..."
-            className={`${FILTER_INPUT} w-full min-w-0 py-1.5 sm:w-56`}
+            value={settings.search}
+            onChange={(event) => setSettings((prev) => ({ ...prev, search: event.target.value }))}
+            placeholder="Cari coin atau exchange..."
+            className="h-8 w-full min-w-0 rounded-full border border-border bg-panel-2 px-3 text-[13px] text-foreground outline-none placeholder:text-muted focus:border-border-strong sm:w-52"
           />
-          <label className="flex items-center gap-2 text-[13px] text-foreground">
-            <span className="muted whitespace-nowrap">Min. exchange</span>
-            <select
-              value={minExchanges}
-              onChange={(event) =>
-                setFilters((prev) => ({ ...prev, minExchanges: Number(event.target.value) }))
-              }
-              className={FILTER_INPUT}
-            >
-              {Array.from({ length: maxExchanges }, (_, index) => index + 1).map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
+
+          <label className="flex h-8 items-center gap-1.5 text-[13px] text-foreground">
+            <span className="muted whitespace-nowrap">Fee %</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={settings.defaultFeePct}
+              onChange={(event) => setSettings((prev) => ({ ...prev, defaultFeePct: event.target.value }))}
+              className="num h-8 w-14 rounded-md border border-border bg-panel-2 px-2 text-right text-[13px] text-foreground outline-none focus:border-border-strong"
+              title="Fee taker per sisi (default 0.1% beli + 0.1% jual)"
+            />
           </label>
-          <div className="relative" ref={visibilityRef}>
+
+          <div className="relative" ref={feePopoverRef}>
             <button
               type="button"
-              onClick={() => setColumnVisibilityOpen((open) => !open)}
-              className="btn-ghost"
+              onClick={() => {
+                setFeePopoverOpen((open) => !open);
+                setFiltersOpen(false);
+              }}
+              className="btn-ghost inline-flex items-center gap-1.5"
+              aria-expanded={feePopoverOpen}
             >
-              Kolom
+              Fee khusus
+              {customFeeCount > 0 ? (
+                <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-foreground px-1.5 py-0.5 text-[10px] font-medium leading-none text-background">
+                  {customFeeCount}
+                </span>
+              ) : null}
             </button>
-            {columnVisibilityOpen ? (
-              <div className="absolute left-0 z-30 mt-1 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-panel-2 p-2 shadow-xl">
-                <p className="muted px-1 pb-1 text-[11px] uppercase tracking-wide">Kolom tabel</p>
-                <div className="max-h-[min(10rem,40vh)] overflow-auto">
-                  {hideableColumns.map((column) => (
-                    <label
-                      key={column.id}
-                      className="flex cursor-pointer items-center gap-2 rounded px-1 py-1.5 text-xs text-foreground hover:bg-hover"
+            {feePopoverOpen ? (
+              <div className="absolute left-0 z-40 mt-1 w-72 max-w-[calc(100vw-24px)] rounded-lg border border-border bg-panel p-3 shadow-xl">
+                <div className="mb-2 flex items-center justify-between">
+                  <p className="muted text-[11px] uppercase tracking-wide">Override fee per exchange (%)</p>
+                  {customFeeCount > 0 ? (
+                    <button
+                      type="button"
+                      className="btn-ghost !px-2 !py-0.5 !text-[11px]"
+                      onClick={() => setSettings((prev) => ({ ...prev, exchangeFees: {} }))}
                     >
-                      <input
-                        type="checkbox"
-                        checked={column.getIsVisible()}
-                        onChange={column.getToggleVisibilityHandler()}
-                        className="accent-foreground"
-                      />
-                      {typeof column.columnDef.header === "string" ? column.columnDef.header : column.id}
-                    </label>
-                  ))}
+                      Reset
+                    </button>
+                  ) : null}
                 </div>
-                <p className="muted mt-2 border-t border-border px-1 pb-1 pt-2 text-[11px] uppercase tracking-wide">
-                  Kartu Ada juga di
+                <p className="muted mb-2 text-[11px]">
+                  Kosongkan untuk pakai default ({defaultFeePct}%). Isi 0 untuk fee 0%.
                 </p>
-                <div className="max-h-[min(16rem,50vh)] overflow-auto">
-                  {CARD_FIELD_OPTIONS.map((option) => (
-                    <label
-                      key={option.id}
-                      className="flex cursor-pointer items-center gap-2 rounded px-1 py-1.5 text-xs text-foreground hover:bg-hover"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={cardFields[option.id]}
-                        onChange={(event) =>
-                          setCardFields((prev) => ({ ...prev, [option.id]: event.target.checked }))
-                        }
-                        className="accent-foreground"
-                      />
-                      {option.label}
-                    </label>
-                  ))}
+                <div className="max-h-56 space-y-1 overflow-y-auto pr-0.5">
+                  {visibleExchanges.map((ex) => {
+                    const id = ex.id.toLowerCase();
+                    return (
+                      <label key={id} className="flex items-center justify-between gap-2 text-[13px]">
+                        <span className="truncate text-foreground">{ex.name}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder={String(defaultFeePct)}
+                          value={settings.exchangeFees[id] ?? ""}
+                          onChange={(event) => {
+                            const val = event.target.value;
+                            setSettings((prev) => {
+                              const next = { ...prev.exchangeFees };
+                              if (val.trim() === "") delete next[id];
+                              else next[id] = val;
+                              return { ...prev, exchangeFees: next };
+                            });
+                          }}
+                          className="num h-8 w-16 rounded-md border border-border bg-panel-2 px-2 text-right text-[13px] text-foreground outline-none focus:border-border-strong"
+                        />
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
           </div>
-          <span className="muted text-xs sm:text-[13px]">{filteredCount} pair</span>
+
+          <div className="relative" ref={filtersRef}>
+            <button
+              type="button"
+              onClick={() => {
+                setFiltersOpen((open) => !open);
+                setFeePopoverOpen(false);
+              }}
+              className="btn-ghost inline-flex items-center gap-1.5"
+              aria-expanded={filtersOpen}
+            >
+              Filter
+              {activeFilterCount > 0 ? (
+                <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-foreground px-1.5 py-0.5 text-[10px] font-medium leading-none text-background">
+                  {activeFilterCount}
+                </span>
+              ) : null}
+            </button>
+            {filtersOpen ? (
+              <div className="absolute left-0 z-40 mt-1 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-border bg-panel p-3 shadow-xl">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="muted text-[11px] uppercase tracking-wide">Filter aman</p>
+                  <button
+                    type="button"
+                    onClick={resetFilters}
+                    disabled={activeFilterCount === 0}
+                    className="btn-ghost !px-2 !py-0.5 !text-[11px]"
+                  >
+                    Reset
+                  </button>
+                </div>
+                <div className="mb-3 flex flex-col gap-1.5 text-[13px] text-foreground">
+                  <label className="flex cursor-pointer items-center gap-2" title="Sembunyikan rute jika kedua exchange punya data kontrak dan tidak ada yang cocok.">
+                    <input
+                      type="checkbox"
+                      checked={settings.hideContractMismatch}
+                      onChange={(event) =>
+                        setSettings((prev) => ({ ...prev, hideContractMismatch: event.target.checked }))
+                      }
+                      className="accent-foreground"
+                    />
+                    <span>Kontrak cocok</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2" title="Sembunyikan rute dengan data ticker stale.">
+                    <input
+                      type="checkbox"
+                      checked={settings.hideStale}
+                      onChange={(event) => setSettings((prev) => ({ ...prev, hideStale: event.target.checked }))}
+                      className="accent-foreground"
+                    />
+                    <span>Non-stale</span>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block min-w-0">
+                    <span className="muted mb-1 block text-[10px] uppercase tracking-wide">Min spread %</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      placeholder="Semua"
+                      value={settings.minSpreadPct}
+                      onChange={(event) => setSettings((prev) => ({ ...prev, minSpreadPct: event.target.value }))}
+                      className={FILTER_INPUT}
+                    />
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="muted mb-1 block text-[10px] uppercase tracking-wide">Min vol $</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      placeholder="Semua"
+                      value={settings.minVolumeUsd}
+                      onChange={(event) => setSettings((prev) => ({ ...prev, minVolumeUsd: event.target.value }))}
+                      className={FILTER_INPUT}
+                    />
+                  </label>
+                  <label className="col-span-2 block min-w-0">
+                    <span className="muted mb-1 block text-[10px] uppercase tracking-wide">Maks umur (mnt)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="Bebas"
+                      value={settings.maxAgeMinutes}
+                      onChange={(event) => setSettings((prev) => ({ ...prev, maxAgeMinutes: event.target.value }))}
+                      className={FILTER_INPUT}
+                    />
+                  </label>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            className="compare-status-chips inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-panel-2 p-0.5"
+            role="group"
+            aria-label="Filter status Depo/WD rute terbaik"
+          >
+            {(
+              [
+                { key: "showFundingOpen" as const, label: "Buka", count: statusCounts.open, title: "Rute dengan WD beli dan Depo jual terbuka" },
+                { key: "showFundingSuspended" as const, label: "Suspend", count: statusCounts.suspended, title: "Rute dengan WD beli atau Depo jual tertutup" },
+                { key: "showFundingUnknown" as const, label: "Tidak diketahui", count: statusCounts.unknown, title: "Rute dengan status Depo/WD belum diketahui" },
+              ] as const
+            ).map((chip) => {
+              const on = settings[chip.key];
+              return (
+                <button
+                  key={chip.key}
+                  type="button"
+                  className={`inline-flex h-6 items-center gap-1 rounded-full px-2 text-[12px] font-medium whitespace-nowrap ${
+                    on ? "bg-foreground text-background" : "text-muted hover:bg-hover hover:text-foreground"
+                  }`}
+                  aria-pressed={on}
+                  title={chip.title}
+                  onClick={() => toggleFundingStatus(chip.key)}
+                >
+                  <span>{chip.label}</span>
+                  <span className="num text-[11px]">{chip.count.toLocaleString("id-ID")}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <label
+            className="flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-foreground"
+            title="Tampilkan juga coin yang rute terbaiknya masih minus setelah fee"
+          >
+            <input
+              type="checkbox"
+              checked={settings.showNegative}
+              onChange={(event) => setSettings((prev) => ({ ...prev, showNegative: event.target.checked }))}
+              className="accent-foreground"
+            />
+            <span>Tampilkan minus</span>
+            <span className="num muted text-[11px]">{negativeCount.toLocaleString("id-ID")}</span>
+          </label>
+
+          <label className="flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-foreground">
+            <input
+              type="checkbox"
+              checked={settings.depthMode}
+              onChange={(event) => setSettings((prev) => ({ ...prev, depthMode: event.target.checked }))}
+              className="accent-foreground"
+            />
+            <span>Depth</span>
+          </label>
+
+          <label className="flex h-8 items-center gap-1.5 text-[13px]">
+            <span className="muted whitespace-nowrap">Modal $</span>
+            <input
+              type="number"
+              min="1"
+              step="10"
+              value={settings.modalUsd}
+              onChange={(event) => setSettings((prev) => ({ ...prev, modalUsd: event.target.value }))}
+              className="num h-8 w-16 rounded-md border border-border bg-panel-2 px-2 text-right text-[13px] text-foreground outline-none focus:border-border-strong"
+            />
+          </label>
+
+          {settings.depthMode ? (
+            <>
+              <span className="num muted whitespace-nowrap text-[11px]">
+                {depthProgress.loading
+                  ? `Book ${depthProgress.ready}/${depthProgress.total}`
+                  : `${depthProgress.ready}/${depthProgress.total} book`}
+                {depthProgress.failed > 0 ? ` · ${depthProgress.failed} gagal` : ""}
+              </span>
+              <button
+                type="button"
+                onClick={refreshDepth}
+                disabled={depthProgress.loading}
+                className="btn-ghost !h-8 !px-2.5 text-[12px]"
+              >
+                Refresh
+              </button>
+            </>
+          ) : null}
+
+          <span className="muted ml-auto whitespace-nowrap text-[12px]">
+            <span className="num font-medium text-foreground">
+              {visibleExchanges.length}/{allExchanges.length || exchanges.length}
+            </span>{" "}
+            market ·{" "}
+            <span className="num font-medium text-foreground">{totalCount.toLocaleString("id-ID")}</span> coin
+          </span>
         </div>
 
-        <div className="tickers-scroll min-h-0 flex-1 overflow-auto">
-          <table className="tickers-table compare-table w-full min-w-[52rem] border-separate border-spacing-0 text-left">
+        <div className="tickers-scroll min-h-0 min-w-0 flex-1 overflow-auto">
+          <table
+            className={`tickers-table compare-routes-table w-full border-separate border-spacing-0 text-left${
+              settings.depthMode ? " is-depth" : ""
+            }`}
+          >
             <thead>
-              {table.getHeaderGroups().map((headerGroup) => (
-                <tr key={headerGroup.id}>
-                  {headerGroup.headers.map((header) => {
-                    const sticky = header.column.columnDef.meta?.sticky;
-                    const align = header.column.columnDef.meta?.align === "right" ? "text-right" : "text-left";
-                    const canSort = header.column.getCanSort();
-                    const sorted = header.column.getIsSorted();
-                    const sortIndex = header.column.getSortIndex();
-                    const showIndex = sorted && sorting.length > 1;
-                    return (
-                      <th key={header.id} className={sticky ? `sticky-col sticky-${sticky}` : ""}>
-                        {canSort ? (
-                          <button
-                            type="button"
-                            onClick={header.column.getToggleSortingHandler()}
-                            className={`flex w-full items-center gap-1 ${align === "text-right" ? "justify-end" : "justify-start"}`}
-                          >
-                            {flexRender(header.column.columnDef.header, header.getContext())}
-                            <span className="inline-flex min-w-3 items-center text-[10px] text-foreground">
-                              {sorted === "asc" ? "↑" : sorted === "desc" ? "↓" : ""}
-                              {showIndex ? sortIndex + 1 : ""}
-                            </span>
-                          </button>
-                        ) : (
-                          <span className={align}>{flexRender(header.column.columnDef.header, header.getContext())}</span>
-                        )}
-                      </th>
-                    );
-                  })}
-                </tr>
-              ))}
+              <tr>
+                {sortTh("base", "Coin", "left", "sticky-col sticky-coin")}
+                <th className="col-buy text-left">Beli di</th>
+                <th className="col-sell text-left">Jual di</th>
+                {sortTh("grossSpreadPct", "Spread %", "right", "col-spread")}
+                {sortTh("netProfitPct", "Profit bersih", "right", "col-profit")}
+                {settings.depthMode ? (
+                  <>
+                    <th className="col-vwap text-right">VWAP</th>
+                    {sortTh("depthProfitPct", "Profit depth", "right", "col-depth-profit")}
+                    {sortTh("maxFillableUsd", "Max fill", "right", "col-fill")}
+                  </>
+                ) : null}
+                {sortTh("volume", "Vol 24h", "right", "col-vol")}
+                {sortTh("age", "Umur", "left", "col-age")}
+              </tr>
             </thead>
             <tbody>
-              {table.getRowModel().rows.map((row) => (
-                <tr key={row.id}>
-                  {row.getVisibleCells().map((cell) => {
-                    const sticky = cell.column.columnDef.meta?.sticky;
-                    const align =
-                      cell.column.columnDef.meta?.align === "right" ? "text-right num whitespace-nowrap" : "";
-                    return (
-                      <td key={cell.id} className={`${align} ${sticky ? `sticky-col sticky-${sticky}` : ""}`}>
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-              {!loading && allRows.length === 0 ? (
+              {loading && exchanges.length === 0 ? (
                 <tr>
-                  <td colSpan={Math.max(1, table.getVisibleLeafColumns().length)} className="muted !h-24 px-4 text-center">
-                    {exchanges.length === 0
-                      ? "Belum ada data. Fetch ticker di halaman Tabel dulu."
-                      : "Exchange ini belum punya pair di database."}
+                  <td colSpan={colSpan} className="muted !h-24 px-4 text-center">
+                    Memuat data perbandingan...
                   </td>
                 </tr>
-              ) : null}
-              {!loading && allRows.length > 0 && visibleRows.length === 0 ? (
+              ) : visibleExchanges.length < 2 ? (
                 <tr>
-                  <td colSpan={Math.max(1, table.getVisibleLeafColumns().length)} className="muted !h-24 px-4 text-center">
-                    Tidak ada pair yang cocok dengan pencarian atau min. exchange.
+                  <td colSpan={colSpan} className="muted !h-24 px-4 text-center">
+                    Aktifkan minimal 2 market di Pengaturan Market untuk membandingkan rute.
                   </td>
                 </tr>
-              ) : null}
+              ) : displayedGroups.length === 0 ? (
+                <tr>
+                  <td colSpan={colSpan} className="muted !h-24 px-4 text-center">
+                    Tidak ada rute yang lolos filter saat ini.
+                  </td>
+                </tr>
+              ) : (
+                displayedGroups.map((group) => {
+                  const route = group.bestRoute;
+                  const isExpanded = expandedCoins.has(group.base);
+                  const hasOthers = group.otherRoutes.length > 0;
+                  return (
+                    <Fragment key={group.base}>
+                      <tr className={route.fundingClosed ? "compare-suspended" : undefined}>
+                        <td className="sticky-col sticky-coin">
+                          <div className="compare-coin">
+                            {hasOthers ? (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(group.base)}
+                                className="inline-flex h-5 shrink-0 items-center gap-0.5 rounded border border-border bg-panel-2 px-1.5 text-[10px] font-medium text-foreground hover:border-border-strong hover:bg-hover"
+                                aria-expanded={isExpanded}
+                                title={
+                                  isExpanded
+                                    ? "Sembunyikan rute lain"
+                                    : `Lihat ${group.otherRoutes.length} rute lain untuk ${group.base}`
+                                }
+                              >
+                                <span>{isExpanded ? "▾" : "▸"}</span>
+                                <span className="num">+{group.otherRoutes.length}</span>
+                              </button>
+                            ) : null}
+                            <span className="compare-coin-name">{group.base}</span>
+                            <StatusBadges route={route} />
+                          </div>
+                        </td>
+                        {renderRouteCells(route)}
+                      </tr>
+
+                      {isExpanded
+                        ? group.otherRoutes.map((altRoute) => (
+                            <tr key={altRoute.id} className={`compare-sub${altRoute.fundingClosed ? " compare-suspended" : ""}`}>
+                              <td className="sticky-col sticky-coin">
+                                <div className="compare-coin pl-2">
+                                  <span className="muted text-[11px]">↳</span>
+                                  <span className="compare-coin-name">{altRoute.base}</span>
+                                  <StatusBadges route={altRoute} />
+                                </div>
+                              </td>
+                              {renderRouteCells(altRoute)}
+                            </tr>
+                          ))
+                        : null}
+                    </Fragment>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-[13px]">
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px]">
           <span className="muted">
-            {loading && exchanges.length === 0
-              ? "Memuat tabel..."
-              : `Menampilkan ${from}-${to} dari ${filteredCount}`}
+            Menampilkan {from}–{to} dari {totalCount.toLocaleString("id-ID")}
           </span>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="muted flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="muted flex items-center gap-1.5">
               <span>Baris per halaman</span>
               <select
-                value={String(pageSize)}
-                onChange={(event) => table.setPageSize(Number(event.target.value))}
-                className={`${FILTER_INPUT} py-1`}
+                value={settings.pageSize}
+                onChange={(event) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    pageSize: Number(event.target.value) as 25 | 50 | 100,
+                  }))
+                }
+                className="h-8 rounded-md border border-border bg-panel-2 px-2 text-[13px] text-foreground outline-none"
               >
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
               </select>
             </label>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => table.previousPage()}
-                disabled={!table.getCanPreviousPage()}
-                className="btn-ghost !px-2 !py-1"
-              >
-                Sebelumnya
-              </button>
-              <span className="muted px-2">
-                {pageCount === 0 ? 0 : pageIndex + 1} / {pageCount}
-              </span>
-              <button
-                type="button"
-                onClick={() => table.nextPage()}
-                disabled={!table.getCanNextPage()}
-                className="btn-ghost !px-2 !py-1"
-              >
-                Berikutnya
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setPageIndex((p) => Math.max(0, p - 1))}
+              disabled={safePageIndex <= 0}
+              className="btn-ghost"
+            >
+              Sebelumnya
+            </button>
+            <span className="num muted">
+              {safePageIndex + 1} / {pageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPageIndex((p) => Math.min(pageCount - 1, p + 1))}
+              disabled={safePageIndex >= pageCount - 1}
+              className="btn-ghost"
+            >
+              Berikutnya
+            </button>
           </div>
         </div>
       </main>
+
+      {orderBookModal}
     </div>
   );
 }

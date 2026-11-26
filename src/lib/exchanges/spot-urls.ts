@@ -64,6 +64,8 @@ const SPOT_URLS: Record<string, (base: string, quote: string, rawSymbol?: string
     `https://p2pb2b.com/trade/${base.toUpperCase()}_${quote.toUpperCase()}/`,
   safetrade: (base, quote) =>
     `https://safetrade.com/exchange/${base.toUpperCase()}-${quote.toUpperCase()}?type=basic`,
+  cexio: (base, quote) =>
+    `https://trade.cex.io/spot/${base.toUpperCase()}-${quote.toUpperCase()}`,
   // Binance Alpha: /en/alpha/{chainName}/{contract}. chainName disimpan apa adanya dari token list
   // (BSC, Base, Ethereum, ...) mengikuti pola tautan resmi seperti /en/alpha/BSC/{contract}.
   "binance-alpha": (_base, _quote, _rawSymbol, contracts) => {

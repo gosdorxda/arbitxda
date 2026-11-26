@@ -4,6 +4,7 @@ import { sortByExchangeName } from "@/lib/format";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/components/AppHeader";
+import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { ExchangeMarketBar } from "@/components/ExchangeMarketBar";
 import { useOrderBook } from "@/components/OrderBookModal";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -81,6 +82,7 @@ export function Dashboard() {
   const fetchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const { openOrderBook, orderBookModal } = useOrderBook();
+  const { isDisabled, syncExchanges } = useExchangeSettings();
   const [activeExchange, setActiveExchange] = useState<string | null>(null);
   const [enrichStatus, setEnrichStatus] = useState<EnrichStatus | null>(null);
 
@@ -88,7 +90,9 @@ export function Dashboard() {
     const response = await fetch("/api/status", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || "Gagal memuat status");
-    setExchanges(sortByExchangeName(data.exchanges ?? [], (item) => item.name || item.id));
+    const sorted: ExchangeStatus[] = sortByExchangeName(data.exchanges ?? [], (item) => item.name || item.id);
+    setExchanges(sorted);
+    syncExchanges(sorted.filter((item) => item.enabled !== 0).map((item) => ({ id: item.id, name: item.name, count: item.tickerCount })));
   }, []);
 
   const loadTickers = useCallback(async () => {
@@ -124,12 +128,24 @@ export function Dashboard() {
     };
   }, []);
 
+  const visibleExchanges = useMemo(
+    () => exchanges.filter((item) => !isDisabled(item.id)),
+    [exchanges, isDisabled],
+  );
+  const visibleAllTickers = useMemo(
+    () => tickers.filter((row) => !isDisabled(row.exchange)),
+    [tickers, isDisabled],
+  );
+
   useEffect(() => {
-    if (exchanges.length === 0) return;
-    if (!activeExchange || !exchanges.some((item) => item.id === activeExchange)) {
-      setActiveExchange(exchanges[0].id);
+    if (visibleExchanges.length === 0) {
+      setActiveExchange(null);
+      return;
     }
-  }, [exchanges, activeExchange]);
+    if (!activeExchange || !visibleExchanges.some((item) => item.id === activeExchange)) {
+      setActiveExchange(visibleExchanges[0].id);
+    }
+  }, [visibleExchanges, activeExchange]);
 
   useEffect(() => {
     if (!activeExchange) {
@@ -187,7 +203,7 @@ export function Dashboard() {
     };
   }, [activeExchange, fetching, loadTickers]);
 
-  const active = exchanges.find((item) => item.id === activeExchange) ?? exchanges[0] ?? null;
+  const active = visibleExchanges.find((item) => item.id === activeExchange) ?? visibleExchanges[0] ?? null;
   const visibleTickers = useMemo(
     () => (active ? tickers.filter((row) => row.exchange === active.id) : []),
     [tickers, active],
@@ -203,12 +219,12 @@ export function Dashboard() {
     setBanner(null);
 
     if (exchange === "all") {
-      if (exchanges.length === 0) {
+      if (visibleExchanges.length === 0) {
         fetchingLock.current = false;
-        setBanner("Belum ada exchange aktif.");
+        setBanner(exchanges.length > 0 ? "Semua exchange dinonaktifkan di Pengaturan Market (⚙️)." : "Belum ada exchange aktif.");
         return;
       }
-      const items: FetchJobItem[] = exchanges.map((item) => ({
+      const items: FetchJobItem[] = visibleExchanges.map((item) => ({
         id: item.id,
         name: item.name,
         status: "pending",
@@ -333,8 +349,8 @@ export function Dashboard() {
 
       <ExchangeMarketBar
         loading={loadingStatus}
-        totalCount={exchanges.reduce((sum, item) => sum + item.tickerCount, 0)}
-        items={exchanges.map((exchange) => ({
+        totalCount={visibleExchanges.reduce((sum, item) => sum + item.tickerCount, 0)}
+        items={visibleExchanges.map((exchange) => ({
           id: exchange.id,
           name: exchange.name,
           count: exchange.tickerCount,
@@ -381,8 +397,8 @@ export function Dashboard() {
             </div>
             <TickersTable
               tickers={visibleTickers}
-              allTickers={tickers}
-              exchanges={exchanges.map((item) => ({ id: item.id, name: item.name }))}
+              allTickers={visibleAllTickers}
+              exchanges={visibleExchanges.map((item) => ({ id: item.id, name: item.name }))}
               blacklist={blacklist}
               favorites={favorites}
               loading={loadingTickers}
@@ -390,7 +406,7 @@ export function Dashboard() {
             />
           </>
         ) : (
-          <p className="muted px-1 py-8 text-sm">Belum ada exchange aktif.</p>
+          <p className="muted px-1 py-8 text-sm">{exchanges.length > 0 ? "Semua exchange dinonaktifkan di Pengaturan Market (⚙️)." : "Belum ada exchange aktif."}</p>
         )}
       </main>
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { FundingIcons } from "@/components/FundingIcons";
 import { formatPct, formatPrice, formatUsdCompact } from "@/lib/format";
 
@@ -63,6 +64,7 @@ function openSpot(url: string | null) {
 }
 
 export function GlobalSearch() {
+  const { isDisabled } = useExchangeSettings();
   const inputId = useId();
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -184,8 +186,10 @@ export function GlobalSearch() {
     if (row instanceof HTMLElement) row.scrollIntoView({ block: "nearest" });
   }, [activeIndex, listId, showPanel]);
 
+  const visibleResults = results.filter((hit) => !isDisabled(hit.exchange));
+
   const commitActive = () => {
-    const hit = results[activeIndex] ?? results[0];
+    const hit = visibleResults[activeIndex] ?? visibleResults[0];
     if (!hit) return;
     openSpot(hit.spotUrl);
   };
@@ -207,14 +211,14 @@ export function GlobalSearch() {
         updatePos();
         return;
       }
-      if (results.length === 0) return;
-      setActiveIndex((index) => (index + 1) % results.length);
+      if (visibleResults.length === 0) return;
+      setActiveIndex((index) => (index + 1) % visibleResults.length);
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      if (results.length === 0) return;
-      setActiveIndex((index) => (index - 1 + results.length) % results.length);
+      if (visibleResults.length === 0) return;
+      setActiveIndex((index) => (index - 1 + visibleResults.length) % visibleResults.length);
       return;
     }
     if (event.key === "Enter") {
@@ -321,7 +325,7 @@ export function GlobalSearch() {
                 <p className="muted px-3 py-3 text-[13px]">Ketik minimal {MIN_QUERY} huruf untuk mencari di semua exchange.</p>
               ) : error ? (
                 <p className="px-3 py-3 text-[13px] text-foreground">{error}</p>
-              ) : !loading && results.length === 0 ? (
+              ) : !loading && visibleResults.length === 0 ? (
                 <p className="muted px-3 py-3 text-[13px]">Tidak ada pair yang cocok untuk “{trimmed}”.</p>
               ) : (
                 <div className="global-search-scroll">
@@ -339,7 +343,7 @@ export function GlobalSearch() {
                       </tr>
                     </thead>
                     <tbody>
-                      {results.map((hit, index) => {
+                      {visibleResults.map((hit, index) => {
                         const active = index === activeIndex;
                         const pair = `${hit.base}/${hit.quote}`;
                         return (
@@ -408,7 +412,7 @@ export function GlobalSearch() {
               )}
               {canSearch ? (
                 <div className="global-search-footer muted">
-                  {loading ? "Mencari..." : `${results.length} hasil`}
+                  {loading ? "Mencari..." : `${visibleResults.length} hasil`}
                   <span className="ml-2 hidden sm:inline">Enter buka spot · Esc tutup</span>
                 </div>
               ) : null}

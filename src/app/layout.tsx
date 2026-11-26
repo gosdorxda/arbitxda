@@ -9,6 +9,7 @@ import {
   JetBrains_Mono,
   Plus_Jakarta_Sans,
 } from "next/font/google";
+import { ExchangeSettingsProvider } from "@/components/ExchangeSettings";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -85,7 +86,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           }}
         />
       </head>
-      <body className="flex min-h-full flex-col bg-background font-sans text-foreground">{children}</body>
+      <body className="flex min-h-full flex-col bg-background font-sans text-foreground"><ExchangeSettingsProvider>{children}</ExchangeSettingsProvider></body>
     </html>
   );
 }

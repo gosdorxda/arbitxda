@@ -5,26 +5,27 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-function parsePairs(body: unknown): DepthPairRequest[] | null {
-  if (Array.isArray(body)) return body as DepthPairRequest[];
+function parseBody(body: unknown): { pairs: DepthPairRequest[]; includeLevels: boolean } | null {
+  if (Array.isArray(body)) return { pairs: body as DepthPairRequest[], includeLevels: false };
   if (!body || typeof body !== "object") return null;
-  const record = body as { pairs?: unknown; items?: unknown };
-  if (Array.isArray(record.pairs)) return record.pairs as DepthPairRequest[];
-  if (Array.isArray(record.items)) return record.items as DepthPairRequest[];
+  const record = body as { pairs?: unknown; items?: unknown; includeLevels?: unknown };
+  const includeLevels = record.includeLevels === true;
+  if (Array.isArray(record.pairs)) return { pairs: record.pairs as DepthPairRequest[], includeLevels };
+  if (Array.isArray(record.items)) return { pairs: record.items as DepthPairRequest[], includeLevels };
   return null;
 }
 
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as unknown;
-    const pairs = parsePairs(body);
-    if (!pairs) {
+    const parsed = parseBody(body);
+    if (!parsed) {
       return NextResponse.json(
         { ok: false, error: "Body harus array {exchange, rawSymbol} atau { pairs: [...] }." },
         { status: 400 },
       );
     }
-    const items = await fetchDepthBatch(pairs);
+    const items = await fetchDepthBatch(parsed.pairs, { includeLevels: parsed.includeLevels });
     return NextResponse.json({ ok: true, items }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

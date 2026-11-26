@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/components/AppHeader";
+import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { FavoriteStar } from "@/components/FavoriteStar";
 import { FundingIcons } from "@/components/FundingIcons";
 import { useOrderBook } from "@/components/OrderBookModal";
@@ -355,6 +356,7 @@ function ExchangePicker({
 }
 
 export function ScannerPage() {
+  const { isDisabled } = useExchangeSettings();
   const [settings, setSettings] = usePersistedState<ScanSettings>("arbit.scanner.settings", DEFAULT_SCAN_SETTINGS, parseSettings);
   const [exchanges, setExchanges] = useState<ExchangeLabel[]>([]);
   const [results, setResults] = useState<ScanResult[] | null>(null);
@@ -401,6 +403,11 @@ export function ScannerPage() {
   const update = <K extends keyof ScanSettings>(key: K, value: ScanSettings[K]) =>
     setSettings((prev) => ({ ...prev, [key]: value }));
 
+  const visibleExchanges = useMemo(
+    () => exchanges.filter((e) => !isDisabled(e.id)),
+    [exchanges, isDisabled],
+  );
+
   const scan = useCallback(async () => {
     setScanning(true);
     setBanner(null);
@@ -410,7 +417,13 @@ export function ScannerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          ...settings,
+          exchanges:
+            settings.exchanges.length > 0
+              ? settings.exchanges.filter((id) => !isDisabled(id))
+              : visibleExchanges.map((e) => e.id),
+        }),
       });
       const data = (await res.json()) as ScanApiResponse;
       if (!res.ok || !data.ok) throw new Error(data.error || "Scan gagal");
@@ -432,7 +445,7 @@ export function ScannerPage() {
     } finally {
       setScanning(false);
     }
-  }, [settings]);
+  }, [settings, isDisabled, visibleExchanges]);
 
   const favorited = useMemo(() => new Set(favorites.map((f) => pairKey(f.exchange, f.raw_symbol))), [favorites]);
 
@@ -485,6 +498,7 @@ export function ScannerPage() {
     if (!results) return [];
     const byCoin = new Map<string, ScanResult[]>();
     for (const r of results) {
+      if (isDisabled(r.buy.exchange) || isDisabled(r.sell.exchange)) continue;
       const list = byCoin.get(r.base);
       if (list) list.push(r);
       else byCoin.set(r.base, [r]);
@@ -495,7 +509,7 @@ export function ScannerPage() {
       out.push({ base, best: items[0]!, items });
     }
     return out;
-  }, [results]);
+  }, [results, isDisabled]);
 
   const visibleGroups = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -656,7 +670,7 @@ export function ScannerPage() {
           </div>
           <div style={fieldStyle}>
             <span className="muted">Exchange</span>
-            <ExchangePicker exchanges={exchanges} selected={settings.exchanges} onChange={(v) => update("exchanges", v)} />
+            <ExchangePicker exchanges={visibleExchanges} selected={settings.exchanges} onChange={(v) => update("exchanges", v)} />
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 6, height: 30, fontSize: 13, cursor: "pointer" }}>
             <input type="checkbox" checked={settings.onlyFavorites} onChange={(e) => update("onlyFavorites", e.target.checked)} />

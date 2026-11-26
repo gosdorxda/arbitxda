@@ -18,14 +18,49 @@ export type DepthPairResult = {
   bidUsd: number | null;
   askUsd: number | null;
   ok: boolean;
+  bids?: OrderBookLevel[];
+  asks?: OrderBookLevel[];
 };
 
-type CacheEntry = DepthPairResult & { cachedAt: number; ttl: number };
+export type FetchDepthBatchOptions = {
+  includeLevels?: boolean;
+};
+
+type CacheEntry = {
+  exchange: string;
+  rawSymbol: string;
+  bidUsd: number | null;
+  askUsd: number | null;
+  ok: boolean;
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+  cachedAt: number;
+  ttl: number;
+};
 
 const cache = new Map<string, CacheEntry>();
 
 export function depthCacheKey(exchange: string, rawSymbol: string): string {
   return `${exchange.trim().toLowerCase()}\t${rawSymbol.trim()}`;
+}
+
+/** Top `count` cleaned bid/ask levels sorted best-first (bid desc, ask asc). */
+export function topSideLevels(
+  levels: OrderBookLevel[] | undefined,
+  side: "bid" | "ask",
+  count = 5,
+): OrderBookLevel[] {
+  if (!levels?.length) return [];
+  const cleaned: OrderBookLevel[] = [];
+  for (const level of levels) {
+    const price = Number(level.price);
+    const volume = Number(level.volume);
+    if (Number.isFinite(price) && price > 0 && Number.isFinite(volume) && volume > 0) {
+      cleaned.push({ price, volume });
+    }
+  }
+  cleaned.sort((left, right) => (side === "bid" ? right.price - left.price : left.price - right.price));
+  return cleaned.slice(0, count);
 }
 
 /** Total USDT/USD notional (price * qty) of the best `count` bid or ask levels. */
@@ -34,16 +69,9 @@ export function topSideNotional(
   side: "bid" | "ask",
   count = 5,
 ): number {
-  if (!levels?.length) return 0;
-  const sorted =
-    side === "bid"
-      ? [...levels].sort((left, right) => right.price - left.price)
-      : [...levels].sort((left, right) => left.price - right.price);
   let total = 0;
-  for (const level of sorted.slice(0, count)) {
-    const price = Number(level.price) || 0;
-    const volume = Number(level.volume) || 0;
-    if (price > 0 && volume > 0) total += price * volume;
+  for (const level of topSideLevels(levels, side, count)) {
+    total += level.price * level.volume;
   }
   return total;
 }
@@ -58,8 +86,33 @@ function readCache(key: string, now = Date.now()): CacheEntry | null {
   return entry;
 }
 
-function writeCache(result: DepthPairResult, ttl: number, now = Date.now()): void {
-  cache.set(depthCacheKey(result.exchange, result.rawSymbol), { ...result, cachedAt: now, ttl });
+function writeCache(entry: Omit<CacheEntry, "cachedAt" | "ttl">, ttl: number, now = Date.now()): void {
+  cache.set(depthCacheKey(entry.exchange, entry.rawSymbol), { ...entry, cachedAt: now, ttl });
+}
+
+function formatResult(
+  pair: DepthPairRequest,
+  entry: Pick<CacheEntry, "bidUsd" | "askUsd" | "ok" | "bids" | "asks">,
+  includeLevels: boolean,
+): DepthPairResult {
+  if (!includeLevels) {
+    return {
+      exchange: pair.exchange,
+      rawSymbol: pair.rawSymbol,
+      bidUsd: entry.bidUsd,
+      askUsd: entry.askUsd,
+      ok: entry.ok,
+    };
+  }
+  return {
+    exchange: pair.exchange,
+    rawSymbol: pair.rawSymbol,
+    bidUsd: entry.bidUsd,
+    askUsd: entry.askUsd,
+    ok: entry.ok,
+    bids: entry.bids,
+    asks: entry.asks,
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -112,10 +165,18 @@ function normalizePairs(pairs: DepthPairRequest[]): DepthPairRequest[] {
   return out;
 }
 
-async function fetchOne(pair: DepthPairRequest): Promise<DepthPairResult> {
+async function fetchOne(pair: DepthPairRequest): Promise<Omit<CacheEntry, "cachedAt" | "ttl">> {
   const id = pair.exchange.toLowerCase();
   if (!hasAdapter(id)) {
-    return { exchange: pair.exchange, rawSymbol: pair.rawSymbol, bidUsd: null, askUsd: null, ok: false };
+    return {
+      exchange: pair.exchange,
+      rawSymbol: pair.rawSymbol,
+      bidUsd: null,
+      askUsd: null,
+      ok: false,
+      bids: [],
+      asks: [],
+    };
   }
   try {
     const result = await withTimeout(
@@ -123,31 +184,48 @@ async function fetchOne(pair: DepthPairRequest): Promise<DepthPairResult> {
       DEPTH_PAIR_TIMEOUT_MS,
       `${id} ${pair.rawSymbol}`,
     );
-    const bidUsd = topSideNotional(result.orderbook.bids, "bid", 5);
-    const askUsd = topSideNotional(result.orderbook.asks, "ask", 5);
-    return { exchange: pair.exchange, rawSymbol: pair.rawSymbol, bidUsd, askUsd, ok: true };
+    const bids = topSideLevels(result.orderbook.bids, "bid", 5);
+    const asks = topSideLevels(result.orderbook.asks, "ask", 5);
+    const bidUsd = bids.reduce((sum, lvl) => sum + lvl.price * lvl.volume, 0);
+    const askUsd = asks.reduce((sum, lvl) => sum + lvl.price * lvl.volume, 0);
+    return {
+      exchange: pair.exchange,
+      rawSymbol: pair.rawSymbol,
+      bidUsd,
+      askUsd,
+      ok: true,
+      bids,
+      asks,
+    };
   } catch {
-    return { exchange: pair.exchange, rawSymbol: pair.rawSymbol, bidUsd: null, askUsd: null, ok: false };
+    return {
+      exchange: pair.exchange,
+      rawSymbol: pair.rawSymbol,
+      bidUsd: null,
+      askUsd: null,
+      ok: false,
+      bids: [],
+      asks: [],
+    };
   }
 }
 
 /** Ambil top-5 depth untuk batch pair; cache memori ~60s; gagal satu pair tidak menggagalkan batch. */
-export async function fetchDepthBatch(pairs: DepthPairRequest[]): Promise<DepthPairResult[]> {
+export async function fetchDepthBatch(
+  pairs: DepthPairRequest[],
+  options?: FetchDepthBatchOptions,
+): Promise<DepthPairResult[]> {
+  const includeLevels = options?.includeLevels === true;
   const unique = normalizePairs(pairs);
   const now = Date.now();
   const results = new Map<string, DepthPairResult>();
   const pending: DepthPairRequest[] = [];
 
   for (const pair of unique) {
-    const hit = readCache(depthCacheKey(pair.exchange, pair.rawSymbol), now);
+    const key = depthCacheKey(pair.exchange, pair.rawSymbol);
+    const hit = readCache(key, now);
     if (hit) {
-      results.set(depthCacheKey(pair.exchange, pair.rawSymbol), {
-        exchange: pair.exchange,
-        rawSymbol: pair.rawSymbol,
-        bidUsd: hit.bidUsd,
-        askUsd: hit.askUsd,
-        ok: hit.ok,
-      });
+      results.set(key, formatResult(pair, hit, includeLevels));
     } else {
       pending.push(pair);
     }
@@ -164,22 +242,17 @@ export async function fetchDepthBatch(pairs: DepthPairRequest[]): Promise<DepthP
   await Promise.all(
     [...byExchange.values()].map((group) =>
       runPool(group, DEPTH_PER_EXCHANGE_CONCURRENCY, async (pair) => {
-        const result = await fetchOne(pair);
-        writeCache(result, result.ok ? DEPTH_CACHE_TTL_MS : DEPTH_ERROR_CACHE_MS);
-        results.set(depthCacheKey(pair.exchange, pair.rawSymbol), result);
+        const entry = await fetchOne(pair);
+        writeCache(entry, entry.ok ? DEPTH_CACHE_TTL_MS : DEPTH_ERROR_CACHE_MS);
+        results.set(depthCacheKey(pair.exchange, pair.rawSymbol), formatResult(pair, entry, includeLevels));
       }),
     ),
   );
 
   return unique.map(
     (pair) =>
-      results.get(depthCacheKey(pair.exchange, pair.rawSymbol)) ?? {
-        exchange: pair.exchange,
-        rawSymbol: pair.rawSymbol,
-        bidUsd: null,
-        askUsd: null,
-        ok: false,
-      },
+      results.get(depthCacheKey(pair.exchange, pair.rawSymbol)) ??
+      formatResult(pair, { bidUsd: null, askUsd: null, ok: false, bids: [], asks: [] }, includeLevels),
   );
 }
 

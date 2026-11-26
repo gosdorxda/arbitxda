@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { AppNav } from "@/components/AppNav";
 import { GlobalSearch } from "@/components/GlobalSearch";
+import { ExchangeSettingsButton } from "@/components/ExchangeSettings";
 import { FontToggle } from "@/components/FontToggle";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -22,6 +23,7 @@ export function AppHeader({ current, children }: AppHeaderProps) {
         <GlobalSearch />
       </div>
       <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <ExchangeSettingsButton />
         <FontToggle />
         <ThemeToggle />
         {children}

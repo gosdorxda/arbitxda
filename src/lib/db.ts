@@ -185,6 +185,7 @@ const EXCHANGE_NAMES: Record<string, string> = {
   p2pb2b: "P2PB2B",
   safetrade: "SafeTrade",
   "binance-alpha": "Binance Alpha",
+  cexio: "CEX.IO",
 };
 
 function runTransaction<T>(db: DatabaseSync, fn: () => T): T {

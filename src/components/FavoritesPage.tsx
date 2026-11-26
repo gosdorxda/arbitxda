@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
 import { AppHeader } from "@/components/AppHeader";
+import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { DepthCell, DepthProvider, DepthStatusBar } from "@/components/DepthBar";
 import { FavoriteStar } from "@/components/FavoriteStar";
 import { FundingIcons } from "@/components/FundingIcons";
@@ -399,6 +400,7 @@ function FavoriteCell({
 }
 
 export function FavoritesPage() {
+  const { isDisabled } = useExchangeSettings();
   const { openOrderBook, orderBookModal } = useOrderBook();
   const [tickers, setTickers] = useState<TickerRow[]>([]);
   const [exchanges, setExchanges] = useState<ExchangeLabel[]>([]);
@@ -501,12 +503,25 @@ export function FavoritesPage() {
     [blacklist],
   );
 
+  const visibleExchanges = useMemo(
+    () => exchanges.filter((item) => !isDisabled(item.id)),
+    [exchanges, isDisabled],
+  );
+  const visibleTickers = useMemo(
+    () => tickers.filter((row) => !isDisabled(row.exchange)),
+    [tickers, isDisabled],
+  );
+  const visibleFavorites = useMemo(
+    () => favorites.filter((item) => !isDisabled(item.exchange)),
+    [favorites, isDisabled],
+  );
+
   const alsoOnIndex = useMemo(() => {
-    const enabledIds = new Set(exchanges.map((item) => item.id));
+    const enabledIds = new Set(visibleExchanges.map((item) => item.id));
     const namesById: Record<string, string> = {};
-    for (const item of exchanges) namesById[item.id] = item.name;
-    return buildAlsoOnIndex(tickers, { enabledIds, namesById, blocked });
-  }, [tickers, exchanges, blocked]);
+    for (const item of visibleExchanges) namesById[item.id] = item.name;
+    return buildAlsoOnIndex(visibleTickers, { enabledIds, namesById, blocked });
+  }, [visibleTickers, visibleExchanges, blocked]);
 
   const tickerByKey = useMemo(() => {
     const map = new Map<string, TickerRow>();
@@ -529,7 +544,7 @@ export function FavoritesPage() {
   const visibleRows = useMemo<TickerTableRow[]>(() => {
     const needle = search.trim().toLowerCase();
     const rows: TickerTableRow[] = [];
-    for (const item of favorites) {
+    for (const item of visibleFavorites) {
       const row = tickerByKey.get(pairKey(item.exchange, item.raw_symbol)) ?? placeholderTicker(item.exchange, item.raw_symbol);
       const peers = peersForRow(alsoOnIndex, row);
       const exchangeName = namesById[row.exchange] ?? row.exchange;
@@ -544,7 +559,7 @@ export function FavoritesPage() {
       rows.push({ ...row, alsoOnCount: peers.length, alsoOnPeers: peers });
     }
     return sortRows(rows, sort.key, sort.desc);
-  }, [favorites, tickerByKey, alsoOnIndex, namesById, search, sort]);
+  }, [visibleFavorites, tickerByKey, alsoOnIndex, namesById, search, sort]);
 
   const depthLookup = useVisibleDepth(visibleRows, columnVisibility.depth);
 
@@ -614,8 +629,11 @@ export function FavoritesPage() {
         <div className="mb-3 flex flex-wrap items-center gap-2 sm:gap-3">
           <h2 className="text-[15px] font-semibold leading-none">Favorit</h2>
           <span className="inline-flex h-6 items-center gap-1 rounded-full border border-border bg-panel-2 px-2 text-[11px] text-muted">
-            <span className="num font-medium text-foreground">{favorites.length.toLocaleString("id-ID")}</span>
+            <span className="num font-medium text-foreground">{visibleFavorites.length.toLocaleString("id-ID")}</span>
             pair
+            {favorites.length > visibleFavorites.length ? (
+              <span className="muted">({(favorites.length - visibleFavorites.length).toLocaleString("id-ID")} nonaktif)</span>
+            ) : null}
           </span>
           <input
             type="search"
