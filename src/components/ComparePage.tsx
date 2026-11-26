@@ -18,9 +18,45 @@ import {
 } from "@/lib/compare-routes";
 import { formatPct, formatPrice, formatRelativeId, formatUsdCompact, formatWib, sortByExchangeName } from "@/lib/format";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
+import { usePersistedState } from "@/lib/persist";
 
 const SETTINGS_STORAGE_KEY = "arbit.compare.settings.v4";
 const LEGACY_SETTINGS_KEYS = ["arbit.compare.settings.v3", "arbit.compare.settings.v2"];
+const COLUMN_VISIBILITY_KEY = "arbit-compare-column-visibility";
+
+const COMPARE_COLUMNS = [
+  { id: "coin", label: "Coin", defaultOn: true, alwaysOn: true, depthOnly: false },
+  { id: "buy", label: "Beli di", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "sell", label: "Jual di", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "contract", label: "Kontrak", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "status", label: "Status", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "spread", label: "Spread %", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "profit", label: "Profit bersih", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "vwap", label: "VWAP", defaultOn: true, alwaysOn: false, depthOnly: true },
+  { id: "depthProfit", label: "Profit depth", defaultOn: true, alwaysOn: false, depthOnly: true },
+  { id: "fill", label: "Max fill", defaultOn: true, alwaysOn: false, depthOnly: true },
+  { id: "volume", label: "Vol 24h", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "age", label: "Umur", defaultOn: true, alwaysOn: false, depthOnly: false },
+  { id: "actions", label: "Aksi", defaultOn: true, alwaysOn: false, depthOnly: false },
+] as const;
+
+type CompareColumnId = (typeof COMPARE_COLUMNS)[number]["id"];
+type CompareColumnVisibility = Record<CompareColumnId, boolean>;
+
+const DEFAULT_COLUMN_VISIBILITY: CompareColumnVisibility = Object.fromEntries(
+  COMPARE_COLUMNS.map((column) => [column.id, column.defaultOn]),
+) as CompareColumnVisibility;
+
+function parseColumnVisibility(raw: unknown): CompareColumnVisibility | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const next = { ...DEFAULT_COLUMN_VISIBILITY };
+  const record = raw as Record<string, unknown>;
+  for (const column of COMPARE_COLUMNS) {
+    if (typeof record[column.id] === "boolean") next[column.id] = record[column.id] as boolean;
+  }
+  next.coin = true;
+  return next;
+}
 
 type CompareSettings = {
   search: string;
@@ -378,10 +414,17 @@ export function ComparePage() {
   const [pageIndex, setPageIndex] = useState(0);
   const [feePopoverOpen, setFeePopoverOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [columnVisibilityOpen, setColumnVisibilityOpen] = useState(false);
   const feePopoverRef = useRef<HTMLDivElement>(null);
   const filtersRef = useRef<HTMLDivElement>(null);
+  const visibilityRef = useRef<HTMLDivElement>(null);
 
   const [settings, setSettings] = useCompareSettings();
+  const [columnVisibility, setColumnVisibility] = usePersistedState<CompareColumnVisibility>(
+    COLUMN_VISIBILITY_KEY,
+    DEFAULT_COLUMN_VISIBILITY,
+    parseColumnVisibility,
+  );
 
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -390,7 +433,7 @@ export function ComparePage() {
   }, []);
 
   useEffect(() => {
-    if (!feePopoverOpen && !filtersOpen) return;
+    if (!feePopoverOpen && !filtersOpen && !columnVisibilityOpen) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (feePopoverOpen && feePopoverRef.current && !feePopoverRef.current.contains(target)) {
@@ -399,11 +442,15 @@ export function ComparePage() {
       if (filtersOpen && filtersRef.current && !filtersRef.current.contains(target)) {
         setFiltersOpen(false);
       }
+      if (columnVisibilityOpen && visibilityRef.current && !visibilityRef.current.contains(target)) {
+        setColumnVisibilityOpen(false);
+      }
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setFeePopoverOpen(false);
         setFiltersOpen(false);
+        setColumnVisibilityOpen(false);
       }
     };
     document.addEventListener("mousedown", onDown);
@@ -412,7 +459,7 @@ export function ComparePage() {
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [feePopoverOpen, filtersOpen]);
+  }, [feePopoverOpen, filtersOpen, columnVisibilityOpen]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -732,7 +779,26 @@ export function ComparePage() {
   };
 
   const customFeeCount = Object.keys(numericExchangeFees).length;
-  const colSpan = settings.depthMode ? 11 : 8;
+
+  const showCol = (id: CompareColumnId) => {
+    if (id === "coin") return true;
+    const column = COMPARE_COLUMNS.find((item) => item.id === id);
+    if (column?.depthOnly && !settings.depthMode) return false;
+    return columnVisibility[id];
+  };
+
+  const pickerColumns = COMPARE_COLUMNS.filter((column) => !column.depthOnly || settings.depthMode);
+  const colSpan =
+    1 +
+    pickerColumns.filter((column) => column.id !== "status" && column.id !== "actions" && showCol(column.id)).length;
+  const isDefaultColumnVisibility = COMPARE_COLUMNS.every(
+    (column) => columnVisibility[column.id] === column.defaultOn,
+  );
+  const toggleColumn = (id: CompareColumnId, checked: boolean) => {
+    if (id === "coin") return;
+    setColumnVisibility((prev) => ({ ...prev, coin: true, [id]: checked }));
+  };
+  const resetColumns = () => setColumnVisibility(DEFAULT_COLUMN_VISIBILITY);
   const from = totalCount === 0 ? 0 : safePageIndex * settings.pageSize + 1;
   const to = Math.min(totalCount, (safePageIndex + 1) * settings.pageSize);
 
@@ -786,6 +852,7 @@ export function ComparePage() {
 
     return (
       <>
+        {showCol("buy") ? (
         <td className="col-buy">
           <RouteLegCell
             side="ask"
@@ -801,6 +868,8 @@ export function ComparePage() {
             onOpenOrderBook={(ex, sym, name) => void openOrderBook(ex, sym, name)}
           />
         </td>
+        ) : null}
+        {showCol("sell") ? (
         <td className="col-sell">
           <RouteLegCell
             side="bid"
@@ -816,10 +885,14 @@ export function ComparePage() {
             onOpenOrderBook={(ex, sym, name) => void openOrderBook(ex, sym, name)}
           />
         </td>
-        <ContractStatusCell route={route} />
+        ) : null}
+        {showCol("contract") ? <ContractStatusCell route={route} /> : null}
+        {showCol("spread") ? (
         <td className="col-spread num whitespace-nowrap text-right">
           <div className={pctClass(route.grossSpreadPct)}>{formatPct(route.grossSpreadPct)}</div>
         </td>
+        ) : null}
+        {showCol("profit") ? (
         <td className="col-profit num whitespace-nowrap text-right">
           <div className={pctClass(route.netProfitPct)}>{formatPct(route.netProfitPct)}</div>
           <span className="compare-subline">
@@ -827,8 +900,10 @@ export function ComparePage() {
             {` · fee ${totalFeePct.toFixed(2).replace(/\.00$/, "")}%`}
           </span>
         </td>
+        ) : null}
         {settings.depthMode ? (
           <>
+            {showCol("vwap") ? (
             <td className="col-vwap num whitespace-nowrap text-right">
               {depth == null ? (
                 <span className="muted text-[12px]">Memuat...</span>
@@ -841,6 +916,8 @@ export function ComparePage() {
                 </>
               )}
             </td>
+            ) : null}
+            {showCol("depthProfit") ? (
             <td className="col-depth-profit num whitespace-nowrap text-right">
               {depth == null ? (
                 <span className="muted text-[12px]">Memuat...</span>
@@ -859,6 +936,8 @@ export function ComparePage() {
                 </>
               )}
             </td>
+            ) : null}
+            {showCol("fill") ? (
             <td className="col-fill num whitespace-nowrap text-right">
               {depth == null || depth.error ? (
                 <span className="muted text-[12px]">-</span>
@@ -873,8 +952,10 @@ export function ComparePage() {
                 </>
               )}
             </td>
+            ) : null}
           </>
         ) : null}
+        {showCol("volume") ? (
         <td
           className="col-vol num whitespace-nowrap text-right"
           title={`Vol beli: ${formatUsdCompact(route.buyVolumeUsd)} · Vol jual: ${formatUsdCompact(route.sellVolumeUsd)}`}
@@ -884,6 +965,8 @@ export function ComparePage() {
             {formatUsdCompact(route.buyVolumeUsd)} / {formatUsdCompact(route.sellVolumeUsd)}
           </span>
         </td>
+        ) : null}
+        {showCol("age") ? (
         <td
           className="col-age whitespace-nowrap"
           title={
@@ -896,6 +979,7 @@ export function ComparePage() {
             {formatRelativeId(route.oldestFetchedAt, nowMs)}
           </span>
         </td>
+        ) : null}
       </>
     );
   };
@@ -941,6 +1025,7 @@ export function ComparePage() {
               onClick={() => {
                 setFeePopoverOpen((open) => !open);
                 setFiltersOpen(false);
+                setColumnVisibilityOpen(false);
               }}
               className="btn-ghost inline-flex items-center gap-1.5"
               aria-expanded={feePopoverOpen}
@@ -1006,6 +1091,7 @@ export function ComparePage() {
               onClick={() => {
                 setFiltersOpen((open) => !open);
                 setFeePopoverOpen(false);
+                setColumnVisibilityOpen(false);
               }}
               className="btn-ghost inline-flex items-center gap-1.5"
               aria-expanded={filtersOpen}
@@ -1077,6 +1163,56 @@ export function ComparePage() {
                       className={FILTER_INPUT}
                     />
                   </label>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="relative" ref={visibilityRef}>
+            <button
+              type="button"
+              onClick={() => {
+                setColumnVisibilityOpen((open) => !open);
+                setFeePopoverOpen(false);
+                setFiltersOpen(false);
+              }}
+              className="btn-ghost"
+              aria-expanded={columnVisibilityOpen}
+            >
+              Kolom
+            </button>
+            {columnVisibilityOpen ? (
+              <div className="absolute left-0 z-40 mt-1 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-panel-2 p-2 shadow-xl">
+                <div className="mb-1 flex items-center justify-between gap-2 px-1 pb-1">
+                  <p className="muted text-[11px] uppercase tracking-wide">Tampilkan kolom</p>
+                  <button
+                    type="button"
+                    onClick={resetColumns}
+                    disabled={isDefaultColumnVisibility}
+                    className="btn-ghost !px-2 !py-0.5 !text-[11px]"
+                  >
+                    Default
+                  </button>
+                </div>
+                <div className="max-h-[min(18rem,70vh)] overflow-auto">
+                  {pickerColumns.map((column) => (
+                    <label
+                      key={column.id}
+                      className={`flex items-center gap-2 rounded px-1 py-1.5 text-xs text-foreground hover:bg-hover ${
+                        column.alwaysOn ? "cursor-default" : "cursor-pointer"
+                      }`}
+                      title={column.alwaysOn ? "Kolom Coin selalu tampil" : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={column.alwaysOn ? true : columnVisibility[column.id]}
+                        disabled={column.alwaysOn}
+                        onChange={(event) => toggleColumn(column.id, event.target.checked)}
+                        className="accent-foreground"
+                      />
+                      {column.label}
+                    </label>
+                  ))}
                 </div>
               </div>
             ) : null}
@@ -1180,20 +1316,20 @@ export function ComparePage() {
             <thead>
               <tr>
                 {sortTh("base", "Coin", "left", "sticky-col sticky-coin")}
-                <th className="col-buy text-left">Beli di</th>
-                <th className="col-sell text-left">Jual di</th>
-                <th className="col-contract text-left">Kontrak</th>
-                {sortTh("grossSpreadPct", "Spread %", "right", "col-spread")}
-                {sortTh("netProfitPct", "Profit bersih", "right", "col-profit")}
+                {showCol("buy") ? <th className="col-buy text-left">Beli di</th> : null}
+                {showCol("sell") ? <th className="col-sell text-left">Jual di</th> : null}
+                {showCol("contract") ? <th className="col-contract text-left">Kontrak</th> : null}
+                {showCol("spread") ? sortTh("grossSpreadPct", "Spread %", "right", "col-spread") : null}
+                {showCol("profit") ? sortTh("netProfitPct", "Profit bersih", "right", "col-profit") : null}
                 {settings.depthMode ? (
                   <>
-                    <th className="col-vwap text-right">VWAP</th>
-                    {sortTh("depthProfitPct", "Profit depth", "right", "col-depth-profit")}
-                    {sortTh("maxFillableUsd", "Max fill", "right", "col-fill")}
+                    {showCol("vwap") ? <th className="col-vwap text-right">VWAP</th> : null}
+                    {showCol("depthProfit") ? sortTh("depthProfitPct", "Profit depth", "right", "col-depth-profit") : null}
+                    {showCol("fill") ? sortTh("maxFillableUsd", "Max fill", "right", "col-fill") : null}
                   </>
                 ) : null}
-                {sortTh("volume", "Vol 24h", "right", "col-vol")}
-                {sortTh("age", "Umur", "left", "col-age")}
+                {showCol("volume") ? sortTh("volume", "Vol 24h", "right", "col-vol") : null}
+                {showCol("age") ? sortTh("age", "Umur", "left", "col-age") : null}
               </tr>
             </thead>
             <tbody>
@@ -1242,6 +1378,7 @@ export function ComparePage() {
                               </button>
                             ) : null}
                             <span className="compare-coin-name">{group.base}</span>
+                            {showCol("actions") ? (
                             <BlacklistRowButton
                               coin={group.base}
                               listings={[
@@ -1249,7 +1386,8 @@ export function ComparePage() {
                                 { id: route.sell.exchange, name: route.sellExchangeName },
                               ]}
                             />
-                            <StatusBadges route={route} />
+                            ) : null}
+                            {showCol("status") ? <StatusBadges route={route} /> : null}
                           </div>
                         </td>
                         {renderRouteCells(route)}
@@ -1262,6 +1400,7 @@ export function ComparePage() {
                                 <div className="compare-coin pl-2">
                                   <span className="muted text-[11px]">↳</span>
                                   <span className="compare-coin-name">{altRoute.base}</span>
+                                  {showCol("actions") ? (
                                   <BlacklistRowButton
                                     coin={altRoute.base}
                                     listings={[
@@ -1269,7 +1408,8 @@ export function ComparePage() {
                                       { id: altRoute.sell.exchange, name: altRoute.sellExchangeName },
                                     ]}
                                   />
-                                  <StatusBadges route={altRoute} />
+                                  ) : null}
+                                  {showCol("status") ? <StatusBadges route={altRoute} /> : null}
                                 </div>
                               </td>
                               {renderRouteCells(altRoute)}
