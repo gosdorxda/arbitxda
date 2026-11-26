@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AppHeader } from "@/components/AppHeader";
+import { BlacklistPopoverButton, BlacklistRowButton, useCoinBlacklist } from "@/components/BlacklistSettings";
 import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { useOrderBook } from "@/components/OrderBookModal";
 import { useCompareDepth, type CompareDepthPair } from "@/components/useCompareDepth";
@@ -12,13 +13,14 @@ import {
   type CompareCoinGroup,
   type CompareRoute,
   type CompareSafetyFilters,
+  type ContractMatchStatus,
   type DepthRouteMetrics,
 } from "@/lib/compare-routes";
 import { formatPct, formatPrice, formatRelativeId, formatUsdCompact, formatWib, sortByExchangeName } from "@/lib/format";
 import { getSpotUrl } from "@/lib/exchanges/spot-urls";
 
-const SETTINGS_STORAGE_KEY = "arbit.compare.settings.v3";
-const LEGACY_SETTINGS_KEY = "arbit.compare.settings.v2";
+const SETTINGS_STORAGE_KEY = "arbit.compare.settings.v4";
+const LEGACY_SETTINGS_KEYS = ["arbit.compare.settings.v3", "arbit.compare.settings.v2"];
 
 type CompareSettings = {
   search: string;
@@ -30,7 +32,10 @@ type CompareSettings = {
   showFundingSuspended: boolean;
   showFundingUnknown: boolean;
   showNegative: boolean;
-  hideContractMismatch: boolean;
+  showContractMatch: boolean;
+  showContractMismatch: boolean;
+  showContractUnknown: boolean;
+  showContractNative: boolean;
   hideStale: boolean;
   maxAgeMinutes: string;
   minSpreadPct: string;
@@ -48,7 +53,10 @@ const DEFAULT_SETTINGS: CompareSettings = {
   showFundingSuspended: true,
   showFundingUnknown: true,
   showNegative: false,
-  hideContractMismatch: true,
+  showContractMatch: true,
+  showContractMismatch: true,
+  showContractUnknown: true,
+  showContractNative: true,
   hideStale: true,
   maxAgeMinutes: "",
   minSpreadPct: "",
@@ -89,8 +97,10 @@ function parseSettings(raw: unknown): CompareSettings | null {
     showFundingSuspended: typeof r.showFundingSuspended === "boolean" ? r.showFundingSuspended : true,
     showFundingUnknown: typeof r.showFundingUnknown === "boolean" ? r.showFundingUnknown : true,
     showNegative: typeof r.showNegative === "boolean" ? r.showNegative : false,
-    hideContractMismatch:
-      typeof r.hideContractMismatch === "boolean" ? r.hideContractMismatch : DEFAULT_SETTINGS.hideContractMismatch,
+    showContractMatch: typeof r.showContractMatch === "boolean" ? r.showContractMatch : true,
+    showContractMismatch: typeof r.showContractMismatch === "boolean" ? r.showContractMismatch : true,
+    showContractUnknown: typeof r.showContractUnknown === "boolean" ? r.showContractUnknown : true,
+    showContractNative: typeof r.showContractNative === "boolean" ? r.showContractNative : true,
     hideStale: typeof r.hideStale === "boolean" ? r.hideStale : DEFAULT_SETTINGS.hideStale,
     maxAgeMinutes: typeof r.maxAgeMinutes === "string" ? r.maxAgeMinutes : DEFAULT_SETTINGS.maxAgeMinutes,
     minSpreadPct: typeof r.minSpreadPct === "string" ? r.minSpreadPct : DEFAULT_SETTINGS.minSpreadPct,
@@ -122,7 +132,9 @@ function useCompareSettings() {
 
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_SETTINGS_KEY);
+      const raw =
+        window.localStorage.getItem(SETTINGS_STORAGE_KEY) ??
+        LEGACY_SETTINGS_KEYS.reduce<string | null>((found, key) => found ?? window.localStorage.getItem(key), null);
       if (raw != null && raw !== "") {
         const parsed = parseSettings(JSON.parse(raw));
         if (parsed != null) setValue(parsed);
@@ -287,16 +299,6 @@ function StatusBadges({ route }: { route: CompareRoute }) {
           Status?
         </span>
       ) : null}
-      {route.contractStatus === "match" ? (
-        <span className="compare-chip-badge badge-ok" title="Kontrak cocok di kedua exchange">
-          Kontrak
-        </span>
-      ) : null}
-      {route.contractStatus === "mismatch" ? (
-        <span className="compare-chip-badge badge-bad" title="Kontrak tidak cocok antara exchange beli & jual">
-          Beda kontrak
-        </span>
-      ) : null}
       {route.isStale ? (
         <span className="compare-chip-badge badge-warn" title="Data ticker stale">
           Stale
@@ -306,8 +308,62 @@ function StatusBadges({ route }: { route: CompareRoute }) {
   );
 }
 
+function contractStatusLabel(route: CompareRoute): { text: string; className: string } {
+  if (route.contractStatus === "match") return { text: "✓ Sama", className: "is-match" };
+  if (route.contractStatus === "mismatch") return { text: "✗ Beda", className: "is-mismatch" };
+  if (route.contractStatus === "native") return { text: "Native", className: "is-native" };
+  return { text: route.contractUnknownLabel || "?", className: "is-unknown" };
+}
+
+function ContractStatusCell({ route }: { route: CompareRoute }) {
+  const status = contractStatusLabel(route);
+  return (
+    <td className="col-contract">
+      <span className={`compare-contract ${status.className}`} title={route.contractTooltip}>
+        {status.text}
+      </span>
+    </td>
+  );
+}
+
+type SegOption<K extends string> = { key: K; label: string; count: number; title: string };
+
+function SegmentedFilter<K extends string>({
+  ariaLabel,
+  options,
+  isOn,
+  onToggle,
+}: {
+  ariaLabel: string;
+  options: readonly SegOption<K>[];
+  isOn: (key: K) => boolean;
+  onToggle: (key: K) => void;
+}) {
+  return (
+    <div className="compare-seg" role="group" aria-label={ariaLabel}>
+      {options.map((option) => {
+        const on = isOn(option.key);
+        return (
+          <button
+            key={option.key}
+            type="button"
+            className={on ? "is-on" : undefined}
+            aria-pressed={on}
+            title={option.title}
+            onClick={() => onToggle(option.key)}
+          >
+            <span>{option.label}</span>
+            <span className="num">{option.count.toLocaleString("id-ID")}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function ComparePage() {
   const { isDisabled, syncExchanges, allExchanges } = useExchangeSettings();
+  const { isBlocked } = useCoinBlacklist();
   const { openOrderBook, orderBookModal } = useOrderBook();
 
   const [exchanges, setExchanges] = useState<CompareExchangeInfo[]>([]);
@@ -413,19 +469,12 @@ export function ComparePage() {
 
   const safetyFilters = useMemo<CompareSafetyFilters>(
     () => ({
-      hideContractMismatch: settings.hideContractMismatch,
       hideStale: settings.hideStale,
       maxAgeMinutes: parseOptionalNumber(settings.maxAgeMinutes),
       minSpreadPct: parseOptionalNumber(settings.minSpreadPct),
       minVolumeUsd: parseOptionalNumber(settings.minVolumeUsd),
     }),
-    [
-      settings.hideContractMismatch,
-      settings.hideStale,
-      settings.maxAgeMinutes,
-      settings.minSpreadPct,
-      settings.minVolumeUsd,
-    ],
+    [settings.hideStale, settings.maxAgeMinutes, settings.minSpreadPct, settings.minVolumeUsd],
   );
 
   const coinGroups = useMemo(
@@ -439,8 +488,9 @@ export function ComparePage() {
         modalUsd,
         filters: safetyFilters,
         nowMs,
+        isBlocked,
       }),
-    [byBase, activeExchangeIds, exchangeNames, defaultFeePct, numericExchangeFees, modalUsd, safetyFilters, nowMs],
+    [byBase, activeExchangeIds, exchangeNames, defaultFeePct, numericExchangeFees, modalUsd, safetyFilters, nowMs, isBlocked],
   );
 
   const searchedGroups = useMemo(() => {
@@ -469,14 +519,42 @@ export function ComparePage() {
     return counts;
   }, [searchedGroups]);
 
+  const contractCounts = useMemo(() => {
+    const counts = { match: 0, mismatch: 0, unknown: 0, native: 0 };
+    for (const group of searchedGroups) {
+      counts[group.bestRoute.contractStatus] += 1;
+    }
+    return counts;
+  }, [searchedGroups]);
+
+  const allowsContractStatus = (status: ContractMatchStatus) => {
+    if (status === "match") return settings.showContractMatch;
+    if (status === "mismatch") return settings.showContractMismatch;
+    if (status === "unknown") return settings.showContractUnknown;
+    return settings.showContractNative;
+  };
+
   const statusVisibleGroups = useMemo(() => {
     return searchedGroups.filter((group) => {
       const status = group.bestRoute.fundingStatus;
-      if (status === "open") return settings.showFundingOpen;
-      if (status === "suspended") return settings.showFundingSuspended;
-      return settings.showFundingUnknown;
+      const fundingOk =
+        status === "open"
+          ? settings.showFundingOpen
+          : status === "suspended"
+            ? settings.showFundingSuspended
+            : settings.showFundingUnknown;
+      return fundingOk && allowsContractStatus(group.bestRoute.contractStatus);
     });
-  }, [searchedGroups, settings.showFundingOpen, settings.showFundingSuspended, settings.showFundingUnknown]);
+  }, [
+    searchedGroups,
+    settings.showFundingOpen,
+    settings.showFundingSuspended,
+    settings.showFundingUnknown,
+    settings.showContractMatch,
+    settings.showContractMismatch,
+    settings.showContractUnknown,
+    settings.showContractNative,
+  ]);
 
   const negativeCount = useMemo(
     () => statusVisibleGroups.filter((group) => group.bestRoute.netProfitPct < 0).length,
@@ -538,7 +616,10 @@ export function ComparePage() {
     settings.showFundingSuspended,
     settings.showFundingUnknown,
     settings.showNegative,
-    settings.hideContractMismatch,
+    settings.showContractMatch,
+    settings.showContractMismatch,
+    settings.showContractUnknown,
+    settings.showContractNative,
     settings.hideStale,
     settings.maxAgeMinutes,
     settings.minSpreadPct,
@@ -651,12 +732,11 @@ export function ComparePage() {
   };
 
   const customFeeCount = Object.keys(numericExchangeFees).length;
-  const colSpan = settings.depthMode ? 10 : 7;
+  const colSpan = settings.depthMode ? 11 : 8;
   const from = totalCount === 0 ? 0 : safePageIndex * settings.pageSize + 1;
   const to = Math.min(totalCount, (safePageIndex + 1) * settings.pageSize);
 
   const activeFilterCount =
-    Number(settings.hideContractMismatch !== DEFAULT_SETTINGS.hideContractMismatch) +
     Number(settings.hideStale !== DEFAULT_SETTINGS.hideStale) +
     Number(settings.maxAgeMinutes.trim() !== "") +
     Number(settings.minSpreadPct.trim() !== "") +
@@ -665,7 +745,6 @@ export function ComparePage() {
   const resetFilters = () => {
     setSettings((prev) => ({
       ...prev,
-      hideContractMismatch: true,
       hideStale: true,
       maxAgeMinutes: "",
       minSpreadPct: "",
@@ -677,6 +756,23 @@ export function ComparePage() {
     setSettings((prev) => {
       const next = { ...prev, [key]: !prev[key] };
       if (!next.showFundingOpen && !next.showFundingSuspended && !next.showFundingUnknown) {
+        return prev;
+      }
+      return next;
+    });
+  };
+
+  const toggleContractStatus = (
+    key: "showContractMatch" | "showContractMismatch" | "showContractUnknown" | "showContractNative",
+  ) => {
+    setSettings((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (
+        !next.showContractMatch &&
+        !next.showContractMismatch &&
+        !next.showContractUnknown &&
+        !next.showContractNative
+      ) {
         return prev;
       }
       return next;
@@ -720,6 +816,7 @@ export function ComparePage() {
             onOpenOrderBook={(ex, sym, name) => void openOrderBook(ex, sym, name)}
           />
         </td>
+        <ContractStatusCell route={route} />
         <td className="col-spread num whitespace-nowrap text-right">
           <div className={pctClass(route.grossSpreadPct)}>{formatPct(route.grossSpreadPct)}</div>
         </td>
@@ -934,17 +1031,6 @@ export function ComparePage() {
                   </button>
                 </div>
                 <div className="mb-3 flex flex-col gap-1.5 text-[13px] text-foreground">
-                  <label className="flex cursor-pointer items-center gap-2" title="Sembunyikan rute jika kedua exchange punya data kontrak dan tidak ada yang cocok.">
-                    <input
-                      type="checkbox"
-                      checked={settings.hideContractMismatch}
-                      onChange={(event) =>
-                        setSettings((prev) => ({ ...prev, hideContractMismatch: event.target.checked }))
-                      }
-                      className="accent-foreground"
-                    />
-                    <span>Kontrak cocok</span>
-                  </label>
                   <label className="flex cursor-pointer items-center gap-2" title="Sembunyikan rute dengan data ticker stale.">
                     <input
                       type="checkbox"
@@ -996,36 +1082,30 @@ export function ComparePage() {
             ) : null}
           </div>
 
-          <div
-            className="compare-status-chips inline-flex h-8 shrink-0 items-center rounded-full border border-border bg-panel-2 p-0.5"
-            role="group"
-            aria-label="Filter status Depo/WD rute terbaik"
-          >
-            {(
-              [
-                { key: "showFundingOpen" as const, label: "Buka", count: statusCounts.open, title: "Rute dengan WD beli dan Depo jual terbuka" },
-                { key: "showFundingSuspended" as const, label: "Suspend", count: statusCounts.suspended, title: "Rute dengan WD beli atau Depo jual tertutup" },
-                { key: "showFundingUnknown" as const, label: "Tidak diketahui", count: statusCounts.unknown, title: "Rute dengan status Depo/WD belum diketahui" },
-              ] as const
-            ).map((chip) => {
-              const on = settings[chip.key];
-              return (
-                <button
-                  key={chip.key}
-                  type="button"
-                  className={`inline-flex h-6 items-center gap-1 rounded-full px-2 text-[12px] font-medium whitespace-nowrap ${
-                    on ? "bg-foreground text-background" : "text-muted hover:bg-hover hover:text-foreground"
-                  }`}
-                  aria-pressed={on}
-                  title={chip.title}
-                  onClick={() => toggleFundingStatus(chip.key)}
-                >
-                  <span>{chip.label}</span>
-                  <span className="num text-[11px]">{chip.count.toLocaleString("id-ID")}</span>
-                </button>
-              );
-            })}
-          </div>
+          <SegmentedFilter
+            ariaLabel="Filter status Depo/WD rute terbaik"
+            options={[
+              { key: "showFundingOpen", label: "Buka", count: statusCounts.open, title: "Rute dengan WD beli dan Depo jual terbuka" },
+              { key: "showFundingSuspended", label: "Suspend", count: statusCounts.suspended, title: "Rute dengan WD beli atau Depo jual tertutup" },
+              { key: "showFundingUnknown", label: "Tidak diketahui", count: statusCounts.unknown, title: "Rute dengan status Depo/WD belum diketahui" },
+            ]}
+            isOn={(key) => settings[key]}
+            onToggle={toggleFundingStatus}
+          />
+
+          <SegmentedFilter
+            ariaLabel="Filter status kontrak rute terbaik"
+            options={[
+              { key: "showContractMatch", label: "Sama", count: contractCounts.match, title: "Kontrak cocok di kedua exchange" },
+              { key: "showContractMismatch", label: "Beda", count: contractCounts.mismatch, title: "Kedua sisi punya kontrak, tetapi tidak ada yang cocok" },
+              { key: "showContractUnknown", label: "?", count: contractCounts.unknown, title: "Salah satu atau kedua exchange tidak punya data kontrak" },
+              { key: "showContractNative", label: "Native", count: contractCounts.native, title: "Coin native tanpa kontrak on-chain di kedua sisi" },
+            ]}
+            isOn={(key) => settings[key]}
+            onToggle={toggleContractStatus}
+          />
+
+          <BlacklistPopoverButton exchangeNames={exchangeNames} />
 
           <label
             className="flex h-8 cursor-pointer items-center gap-1.5 whitespace-nowrap text-[13px] text-foreground"
@@ -1102,6 +1182,7 @@ export function ComparePage() {
                 {sortTh("base", "Coin", "left", "sticky-col sticky-coin")}
                 <th className="col-buy text-left">Beli di</th>
                 <th className="col-sell text-left">Jual di</th>
+                <th className="col-contract text-left">Kontrak</th>
                 {sortTh("grossSpreadPct", "Spread %", "right", "col-spread")}
                 {sortTh("netProfitPct", "Profit bersih", "right", "col-profit")}
                 {settings.depthMode ? (
@@ -1161,6 +1242,13 @@ export function ComparePage() {
                               </button>
                             ) : null}
                             <span className="compare-coin-name">{group.base}</span>
+                            <BlacklistRowButton
+                              coin={group.base}
+                              listings={[
+                                { id: route.buy.exchange, name: route.buyExchangeName },
+                                { id: route.sell.exchange, name: route.sellExchangeName },
+                              ]}
+                            />
                             <StatusBadges route={route} />
                           </div>
                         </td>
@@ -1174,6 +1262,13 @@ export function ComparePage() {
                                 <div className="compare-coin pl-2">
                                   <span className="muted text-[11px]">↳</span>
                                   <span className="compare-coin-name">{altRoute.base}</span>
+                                  <BlacklistRowButton
+                                    coin={altRoute.base}
+                                    listings={[
+                                      { id: altRoute.buy.exchange, name: altRoute.buyExchangeName },
+                                      { id: altRoute.sell.exchange, name: altRoute.sellExchangeName },
+                                    ]}
+                                  />
                                   <StatusBadges route={altRoute} />
                                 </div>
                               </td>

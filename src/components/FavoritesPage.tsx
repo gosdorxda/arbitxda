@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
 import { AppHeader } from "@/components/AppHeader";
+import { useCoinBlacklist } from "@/components/BlacklistSettings";
 import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { DepthCell, DepthProvider, DepthStatusBar } from "@/components/DepthBar";
 import { FavoriteStar } from "@/components/FavoriteStar";
@@ -401,6 +402,7 @@ function FavoriteCell({
 
 export function FavoritesPage() {
   const { isDisabled } = useExchangeSettings();
+  const { isBlocked } = useCoinBlacklist();
   const { openOrderBook, orderBookModal } = useOrderBook();
   const [tickers, setTickers] = useState<TickerRow[]>([]);
   const [exchanges, setExchanges] = useState<ExchangeLabel[]>([]);
@@ -508,12 +510,21 @@ export function FavoritesPage() {
     [exchanges, isDisabled],
   );
   const visibleTickers = useMemo(
-    () => tickers.filter((row) => !isDisabled(row.exchange)),
-    [tickers, isDisabled],
+    () => tickers.filter((row) => !isDisabled(row.exchange) && !isBlocked(row.base, row.exchange)),
+    [tickers, isDisabled, isBlocked],
   );
   const visibleFavorites = useMemo(
-    () => favorites.filter((item) => !isDisabled(item.exchange)),
-    [favorites, isDisabled],
+    () =>
+      favorites.filter((item) => {
+        if (isDisabled(item.exchange)) return false;
+        const ticker = tickers.find(
+          (row) => row.exchange === item.exchange && row.raw_symbol === item.raw_symbol,
+        );
+        const base = ticker?.base;
+        if (base && isBlocked(base, item.exchange)) return false;
+        return true;
+      }),
+    [favorites, tickers, isDisabled, isBlocked],
   );
 
   const alsoOnIndex = useMemo(() => {

@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { BlacklistSettingsSection } from "@/components/BlacklistSettings";
 import { sortByExchangeName } from "@/lib/format";
 import { usePersistedState } from "@/lib/persist";
 
@@ -377,6 +378,10 @@ export function ExchangeSettingsButton() {
               })
             )}
           </div>
+
+          <BlacklistSettingsSection
+            exchangeNames={Object.fromEntries(allExchanges.map((item) => [item.id, item.name || item.id]))}
+          />
 
           <p className="exchange-settings-foot">
             Hanya mengubah tampilan UI. File .env tidak diubah.

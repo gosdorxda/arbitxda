@@ -3,12 +3,18 @@ import type { CompareCoinEntry, CompareExchangeCell } from "./compare";
 import { parseTimestamp } from "./format";
 import type { OrderBookLevel, TokenContract } from "./types";
 
-export type ContractMatchStatus = "match" | "mismatch" | "unknown";
+export type ContractMatchStatus = "match" | "mismatch" | "unknown" | "native";
 
 export type FundingRouteStatus = "open" | "suspended" | "unknown";
 
+export type ContractSideKind = "known" | "native" | "unknown";
+
+export type NormalizedContract = {
+  chain: string;
+  contract: string;
+};
+
 export type CompareSafetyFilters = {
-  hideContractMismatch: boolean;
   hideStale: boolean;
   maxAgeMinutes: number | null;
   minSpreadPct: number | null;
@@ -41,6 +47,8 @@ export type CompareRoute = {
   fundingUnknown: boolean;
   fundingStatus: FundingRouteStatus;
   contractStatus: ContractMatchStatus;
+  contractUnknownLabel: string | null;
+  contractTooltip: string;
   isStale: boolean;
   isAgeStale: boolean;
 };
@@ -125,35 +133,117 @@ export function normalizeContractAddress(contract: string): string {
   return trimmed;
 }
 
+export function shortenContractAddress(address: string): string {
+  const value = address.trim();
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function shortExchangeLabel(name: string | null | undefined, fallback: string): string {
+  const raw = (name ?? "").trim();
+  if (!raw) return fallback;
+  if (raw.length <= 10) return raw;
+  const first = raw.split(/\s+/)[0] ?? raw;
+  return first.length <= 10 ? first : `${first.slice(0, 9)}…`;
+}
+
+function normalizeContractList(contracts: TokenContract[] | null | undefined): NormalizedContract[] {
+  if (!contracts?.length) return [];
+  const out: NormalizedContract[] = [];
+  const seen = new Set<string>();
+  for (const item of contracts) {
+    const chain = canonicalChain(item.chain ?? "");
+    const contract = normalizeContractAddress(item.contract ?? "");
+    if (!contract) continue;
+    const key = `${chain}|${contract}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ chain, contract });
+  }
+  return out;
+}
+
+export function inspectContractSide(contracts: TokenContract[] | null | undefined): {
+  kind: ContractSideKind;
+  entries: NormalizedContract[];
+} {
+  if (contracts == null) return { kind: "unknown", entries: [] };
+  if (contracts.length === 0) return { kind: "native", entries: [] };
+  const entries = normalizeContractList(contracts);
+  if (entries.length === 0) return { kind: "unknown", entries: [] };
+  return { kind: "known", entries };
+}
+
+function formatContractSideLines(
+  kind: ContractSideKind,
+  entries: NormalizedContract[],
+): string {
+  if (kind === "native") return "Native (tanpa kontrak on-chain)";
+  if (kind === "unknown") return "(tidak ada data)";
+  return entries
+    .map((item) => {
+      const chain = item.chain || "?";
+      return `${chain} ${shortenContractAddress(item.contract)}`;
+    })
+    .join(", ");
+}
+
+export type ContractCompareResult = {
+  status: ContractMatchStatus;
+  unknownLabel: string | null;
+  tooltip: string;
+  buyKind: ContractSideKind;
+  sellKind: ContractSideKind;
+};
+
+export function describeContracts(
+  buyContracts: TokenContract[] | null | undefined,
+  sellContracts: TokenContract[] | null | undefined,
+  buyName?: string,
+  sellName?: string,
+): ContractCompareResult {
+  const buy = inspectContractSide(buyContracts);
+  const sell = inspectContractSide(sellContracts);
+  const buyLabel = shortExchangeLabel(buyName, "beli");
+  const sellLabel = shortExchangeLabel(sellName, "jual");
+  const tooltip = `Beli ${buyLabel}: ${formatContractSideLines(buy.kind, buy.entries)}\nJual ${sellLabel}: ${formatContractSideLines(sell.kind, sell.entries)}`;
+
+  if (buy.kind === "native" && sell.kind === "native") {
+    return { status: "native", unknownLabel: null, tooltip, buyKind: buy.kind, sellKind: sell.kind };
+  }
+
+  if (buy.kind === "known" && sell.kind === "known") {
+    for (const left of buy.entries) {
+      for (const right of sell.entries) {
+        if (left.contract !== right.contract) continue;
+        if (!left.chain || !right.chain || left.chain === right.chain) {
+          return { status: "match", unknownLabel: null, tooltip, buyKind: buy.kind, sellKind: sell.kind };
+        }
+      }
+    }
+    return { status: "mismatch", unknownLabel: null, tooltip, buyKind: buy.kind, sellKind: sell.kind };
+  }
+
+  // Satu sisi native, sisi lain punya kontrak diketahui: asset tidak sama.
+  if (
+    (buy.kind === "native" && sell.kind === "known") ||
+    (buy.kind === "known" && sell.kind === "native")
+  ) {
+    return { status: "mismatch", unknownLabel: null, tooltip, buyKind: buy.kind, sellKind: sell.kind };
+  }
+
+  let unknownLabel = "?";
+  if (buy.kind === "unknown" && sell.kind === "unknown") unknownLabel = "? kedua";
+  else if (buy.kind === "unknown") unknownLabel = `? ${buyLabel}`;
+  else if (sell.kind === "unknown") unknownLabel = `? ${sellLabel}`;
+  return { status: "unknown", unknownLabel, tooltip, buyKind: buy.kind, sellKind: sell.kind };
+}
+
 export function compareContracts(
   buyContracts: TokenContract[] | null | undefined,
   sellContracts: TokenContract[] | null | undefined,
 ): ContractMatchStatus {
-  if (!buyContracts?.length || !sellContracts?.length) return "unknown";
-  const buyNorm = buyContracts
-    .map((item) => ({
-      chain: canonicalChain(item.chain ?? ""),
-      contract: normalizeContractAddress(item.contract ?? ""),
-    }))
-    .filter((item) => item.contract.length > 0);
-  const sellNorm = sellContracts
-    .map((item) => ({
-      chain: canonicalChain(item.chain ?? ""),
-      contract: normalizeContractAddress(item.contract ?? ""),
-    }))
-    .filter((item) => item.contract.length > 0);
-
-  if (buyNorm.length === 0 || sellNorm.length === 0) return "unknown";
-
-  for (const left of buyNorm) {
-    for (const right of sellNorm) {
-      if (left.contract !== right.contract) continue;
-      if (!left.chain || !right.chain || left.chain === right.chain) {
-        return "match";
-      }
-    }
-  }
-  return "mismatch";
+  return describeContracts(buyContracts, sellContracts).status;
 }
 
 function parseTimestampMs(iso: string | null | undefined): number | null {
@@ -190,6 +280,7 @@ export function computeCompareCoinGroups(params: {
   modalUsd: number;
   filters: CompareSafetyFilters;
   nowMs?: number;
+  isBlocked?: (base: string, exchangeId: string) => boolean;
 }): CompareCoinGroup[] {
   const {
     byBase,
@@ -200,6 +291,7 @@ export function computeCompareCoinGroups(params: {
     modalUsd,
     filters,
     nowMs = Date.now(),
+    isBlocked,
   } = params;
 
   const baseFee = Number.isFinite(defaultFeePct) && defaultFeePct >= 0 ? defaultFeePct : 0.1;
@@ -212,10 +304,12 @@ export function computeCompareCoinGroups(params: {
   const groups: CompareCoinGroup[] = [];
 
   for (const entry of Object.values(byBase)) {
+    if (isBlocked?.(entry.base, "")) continue;
     const cells: CompareExchangeCell[] = [];
     for (const cell of Object.values(entry.exchanges)) {
       const exId = cell.exchange.toLowerCase();
       if (!activeExchangeIds.has(exId)) continue;
+      if (isBlocked?.(entry.base, exId)) continue;
       if (!isValidQuote(cell.bid) || !isValidQuote(cell.ask)) continue;
       cells.push(cell);
     }
@@ -286,11 +380,12 @@ export function computeCompareCoinGroups(params: {
         const fundingStatus = routeFundingStatus(buyWithdraw, sellDeposit);
         const fundingClosed = fundingStatus === "suspended";
         const fundingUnknown = fundingStatus === "unknown";
-        const contractStatus = compareContracts(buy.contracts, sell.contracts);
+        const buyExchangeName = exchangeNames[buyId] ?? buy.exchange;
+        const sellExchangeName = exchangeNames[sellId] ?? sell.exchange;
+        const contract = describeContracts(buy.contracts, sell.contracts, buyExchangeName, sellExchangeName);
         const isAgeStale = maxAgeMs != null && ageMs != null && ageMs > maxAgeMs;
         const isStale = buy.stale === 1 || sell.stale === 1 || isAgeStale;
 
-        if (filters.hideContractMismatch && contractStatus === "mismatch") continue;
         if (filters.hideStale && isStale) continue;
         if (filters.minSpreadPct != null && Number.isFinite(filters.minSpreadPct) && grossSpreadPct < filters.minSpreadPct) {
           continue;
@@ -304,8 +399,8 @@ export function computeCompareCoinGroups(params: {
           base: entry.base,
           buy,
           sell,
-          buyExchangeName: exchangeNames[buyId] ?? buy.exchange,
-          sellExchangeName: exchangeNames[sellId] ?? sell.exchange,
+          buyExchangeName,
+          sellExchangeName,
           buyAsk,
           sellBid,
           grossSpreadPct,
@@ -324,7 +419,9 @@ export function computeCompareCoinGroups(params: {
           fundingClosed,
           fundingUnknown,
           fundingStatus,
-          contractStatus,
+          contractStatus: contract.status,
+          contractUnknownLabel: contract.unknownLabel,
+          contractTooltip: contract.tooltip,
           isStale,
           isAgeStale,
         });

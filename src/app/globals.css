@@ -1304,15 +1304,20 @@ html[data-theme="light"] .theme-icon-moon {
 
 /* Compare routes: reuse tickers-table look, keep compact two-line legs. */
 .tickers-table.compare-routes-table {
-  min-width: 68rem;
+  min-width: 74rem;
 }
 .tickers-table.compare-routes-table.is-depth {
-  min-width: 94rem;
+  min-width: 100rem;
 }
 .tickers-table.compare-routes-table .col-buy,
 .tickers-table.compare-routes-table .col-sell {
   width: 13.75rem;
   min-width: 13.75rem;
+}
+.tickers-table.compare-routes-table .col-contract {
+  width: 5.75rem;
+  min-width: 5.75rem;
+  max-width: 6.5rem;
 }
 .tickers-table.compare-routes-table .col-spread {
   width: 7.5rem;
@@ -1486,6 +1491,11 @@ html[data-theme="light"] .theme-icon-moon {
   background: var(--panel);
   box-shadow: 0 10px 28px var(--sticky-shadow);
 }
+.exchange-settings-blacklist {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
 .exchange-settings-foot {
   margin-top: 8px;
   padding-top: 8px;
@@ -1495,24 +1505,26 @@ html[data-theme="light"] .theme-icon-moon {
   line-height: 1.4;
 }
 
-.compare-status-chips {
+.compare-seg {
   display: inline-flex;
-  align-items: center;
+  align-items: stretch;
   height: 2rem;
-  padding: 2px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 4px;
   background: var(--panel-2);
+  overflow: hidden;
   flex-shrink: 0;
 }
-.compare-status-chip {
+.compare-seg > button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 1.5rem;
+  height: 100%;
+  margin: 0;
   padding: 0 8px;
   border: none;
-  border-radius: 999px;
+  border-radius: 0;
+  border-right: 1px solid var(--border);
   background: transparent;
   color: var(--muted);
   font-size: 12px;
@@ -1521,17 +1533,98 @@ html[data-theme="light"] .theme-icon-moon {
   white-space: nowrap;
   cursor: pointer;
 }
-.compare-status-chip:hover:not(.is-on) {
+.compare-seg > button:last-child {
+  border-right: none;
+}
+.compare-seg > button:hover:not(.is-on) {
   color: var(--foreground);
   background: var(--hover);
 }
-.compare-status-chip.is-on {
-  background: var(--foreground);
-  color: var(--background);
+.compare-seg > button.is-on {
+  background: var(--btn);
+  color: var(--btn-fg);
 }
-.compare-status-chip .num {
-  font-size: 11px;
+.compare-seg > button .num {
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.compare-seg > button.is-on .num {
+  color: var(--btn-fg);
+  opacity: 0.62;
+}
+
+.compare-contract {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.compare-contract.is-match {
+  color: var(--up);
+}
+.compare-contract.is-mismatch {
+  color: var(--down);
+}
+.compare-contract.is-unknown {
+  color: var(--muted);
+}
+.compare-contract.is-native {
+  color: #6b9eff;
+}
+html.light .compare-contract.is-native,
+html[data-theme="light"] .compare-contract.is-native {
+  color: #2f6fdb;
+}
+
+.compare-bl-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.compare-bl-btn:hover,
+.compare-bl-btn[aria-expanded="true"] {
+  color: var(--down);
+  background: var(--down-soft);
+}
+.compare-bl-menu {
+  position: fixed;
+  z-index: 280;
+  width: 13.75rem;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 10px 28px var(--sticky-shadow);
+}
+.compare-bl-menu > button {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.compare-bl-menu > button:hover {
+  background: var(--hover);
 }
 
 .tickers-table.compare-routes-table tbody tr.compare-suspended > td {

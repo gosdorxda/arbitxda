@@ -4,6 +4,7 @@ import { sortByExchangeName } from "@/lib/format";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/components/AppHeader";
+import { useCoinBlacklist } from "@/components/BlacklistSettings";
 import { useExchangeSettings } from "@/components/ExchangeSettings";
 import { ExchangeMarketBar } from "@/components/ExchangeMarketBar";
 import { useOrderBook } from "@/components/OrderBookModal";
@@ -83,6 +84,7 @@ export function Dashboard() {
   const [banner, setBanner] = useState<string | null>(null);
   const { openOrderBook, orderBookModal } = useOrderBook();
   const { isDisabled, syncExchanges } = useExchangeSettings();
+  const { isBlocked } = useCoinBlacklist();
   const [activeExchange, setActiveExchange] = useState<string | null>(null);
   const [enrichStatus, setEnrichStatus] = useState<EnrichStatus | null>(null);
 
@@ -133,8 +135,8 @@ export function Dashboard() {
     [exchanges, isDisabled],
   );
   const visibleAllTickers = useMemo(
-    () => tickers.filter((row) => !isDisabled(row.exchange)),
-    [tickers, isDisabled],
+    () => tickers.filter((row) => !isDisabled(row.exchange) && !isBlocked(row.base, row.exchange)),
+    [tickers, isDisabled, isBlocked],
   );
 
   useEffect(() => {
@@ -205,8 +207,8 @@ export function Dashboard() {
 
   const active = visibleExchanges.find((item) => item.id === activeExchange) ?? visibleExchanges[0] ?? null;
   const visibleTickers = useMemo(
-    () => (active ? tickers.filter((row) => row.exchange === active.id) : []),
-    [tickers, active],
+    () => (active ? visibleAllTickers.filter((row) => row.exchange === active.id) : []),
+    [visibleAllTickers, active],
   );
 
   const runFetch = async (exchange: string) => {
