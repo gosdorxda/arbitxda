@@ -7,6 +7,7 @@
 import { sleep } from "./rate-limit";
 import { detectSolanaPools, simulateSolanaPools, SOL_RPC_ENV } from "./dex-pools-solana";
 import { DEX_SIM_COW_KEY, dexPoolKey, summarizeMid } from "./dex-pools-types";
+import { getSwapDex, parseUnitsStr, SWAP_CHAINS, type SwapGasRequest, type SwapQuote, type SwapQuoteRequest } from "./dex-swap-types";
 import type { DexCowInfo, DexId, DexPoolInfo, DexPoolsResult, DexSimResult, DexSimRow, DexSimSide } from "./dex-pools-types";
 
 // ---------- konfigurasi per chain ----------
@@ -1208,4 +1209,135 @@ export async function getDexSim(
   } finally {
     simInflight.delete(key);
   }
+}
+
+// ---------- swap: quote + cek allowance/saldo + estimasi gas (read-only, RPC dari env) ----------
+
+const SEL_ALLOWANCE = "dd62ed3e";
+const SEL_APPROVE = "095ea7b3";
+const EVM_ADDR = /^0x[0-9a-fA-F]{40}$/;
+
+async function rpcRaw(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
+  const json = (await postJson(rpcUrl, { jsonrpc: "2.0", id: rpcId++, method, params })) as {
+    result?: unknown;
+    error?: { message?: string };
+  };
+  if (json?.error) throw new Error(`RPC: ${(json.error.message ?? "error").slice(0, 200)}`);
+  return json?.result;
+}
+
+export async function getSwapQuote(req: SwapQuoteRequest): Promise<SwapQuote> {
+  if (!req || typeof req !== "object" || typeof req.amount !== "string" || (req.side !== "buy" && req.side !== "sell")) {
+    throw new Error("Permintaan swap tidak valid");
+  }
+  const cfg = getDexChainConfig(req.chain);
+  const sw = getSwapDex(req.chain, req.dex);
+  if (!cfg || !sw) throw new Error("DEX/chain ini belum didukung untuk swap");
+  const rpcUrl = getRpcUrl(req.chain);
+  if (!rpcUrl) throw new Error(`${cfg.rpcEnv} belum diisi di .env`);
+  if (!EVM_ADDR.test(req.contract) || !EVM_ADDR.test(req.pool) || !EVM_ADDR.test(req.quoteToken)) throw new Error("Alamat tidak valid");
+  const owner = req.owner && EVM_ADDR.test(req.owner) ? req.owner : null;
+  const base = cfg.bases.find((b) => b.address.toLowerCase() === req.quoteToken.toLowerCase());
+  if (!base) throw new Error("Base token pool tidak dikenal");
+  const fee = sw.dex.kind === "v3" ? (req.feePct != null ? Math.round(req.feePct * 10_000) : null) : null;
+  if (sw.dex.kind === "v3" && (fee == null || !(fee > 0))) throw new Error("Fee tier pool V3 tidak diketahui");
+
+  // Ronde 1: metadata token + verifikasi pool via factory.
+  const r1: Call[] = [
+    { target: req.contract, data: enc.noArgs(SEL.decimals) },
+    { target: req.contract, data: enc.noArgs(SEL.symbol) },
+    sw.dex.kind === "v2"
+      ? { target: sw.dex.factory, data: enc.getPair(req.contract, base.address) }
+      : { target: sw.dex.factory, data: enc.getPool(req.contract, base.address, fee!) },
+  ];
+  if (cfg.nativeUsdPool) r1.push({ target: cfg.nativeUsdPool.pool, data: enc.noArgs(SEL.slot0) });
+  const res1 = await multicall(rpcUrl, cfg, r1);
+  if (!res1[0]?.success || res1[0].data.length < 64) throw new Error("decimals() token gagal");
+  const decimals = Number(readUint(res1[0].data, 0));
+  const symbol = (res1[1]?.success ? decodeString(res1[1].data) : null) ?? "TOKEN";
+  const poolFromFactory = res1[2]?.success ? readAddr(res1[2].data, 0) : ZERO_ADDRESS;
+  const poolVerified = poolFromFactory.toLowerCase() === req.pool.toLowerCase();
+  let nativeUsd: number | null = null;
+  if (cfg.nativeUsdPool && res1[3]?.success) {
+    nativeUsd = v3PriceInBase(readUint(res1[3].data, 0), !cfg.nativeUsdPool.usdIsToken0, cfg.weth.decimals, cfg.nativeUsdPool.usdDecimals);
+  }
+
+  const token = { address: req.contract, symbol, decimals };
+  const baseMeta = { address: base.address, symbol: base.symbol, decimals: base.decimals };
+  const tokenIn = req.side === "sell" ? token : baseMeta;
+  const tokenOut = req.side === "sell" ? baseMeta : token;
+  const amountIn = parseUnitsStr(req.amount, tokenIn.decimals);
+  if (amountIn == null || amountIn <= BigInt(0)) throw new Error("Jumlah tidak valid");
+
+  // Ronde 2: quote + allowance + saldo.
+  const r2: Call[] = [];
+  if (sw.dex.kind === "v2") {
+    r2.push({ target: sw.dex.router, data: enc.getAmountsOut(amountIn, [tokenIn.address, tokenOut.address]) });
+  } else {
+    const quoter = cfg.v3.find((d) => d.id === req.dex)?.quoter;
+    if (!quoter) throw new Error("Quoter V3 tidak ada");
+    r2.push({ target: quoter, data: enc.quoteExactInputSingle(tokenIn.address, tokenOut.address, amountIn, fee!) });
+  }
+  if (owner) {
+    r2.push({ target: tokenIn.address, data: "0x" + SEL_ALLOWANCE + wordAddr(owner) + wordAddr(sw.dex.router) });
+    r2.push({ target: tokenIn.address, data: enc.balanceOf(owner) });
+  }
+  const [res2, gasPrice, nativeBal] = await Promise.all([
+    multicall(rpcUrl, cfg, r2),
+    rpcRaw(rpcUrl, "eth_gasPrice", []).catch(() => null),
+    owner ? rpcRaw(rpcUrl, "eth_getBalance", [owner, "latest"]).catch(() => null) : Promise.resolve(null),
+  ]);
+  let amountOut = BigInt(0);
+  const q = res2[0];
+  if (q?.success && q.data) {
+    if (sw.dex.kind === "v3") amountOut = readUint(q.data, 0);
+    else {
+      const amounts = readUintArrayAt(q.data, Number(readUint(q.data, 0)));
+      amountOut = amounts[amounts.length - 1] ?? BigInt(0);
+    }
+  }
+  if (amountOut <= BigInt(0)) throw new Error("Quote gagal (likuiditas kurang / pool tidak bisa dipakai)");
+  const allowance = owner && res2[1]?.success ? readUint(res2[1].data, 0) : null;
+  const balance = owner && res2[2]?.success ? readUint(res2[2].data, 0) : null;
+
+  return {
+    chain: req.chain,
+    kind: sw.dex.kind,
+    dex: req.dex,
+    pool: req.pool,
+    router: sw.dex.router,
+    fee,
+    tokenIn,
+    tokenOut,
+    amountInRaw: amountIn.toString(),
+    amountOutRaw: amountOut.toString(),
+    poolVerified,
+    allowanceRaw: allowance != null ? allowance.toString() : null,
+    balanceRaw: balance != null ? balance.toString() : null,
+    nativeBalanceRaw: typeof nativeBal === "string" ? BigInt(nativeBal).toString() : null,
+    gasPriceWei: typeof gasPrice === "string" ? BigInt(gasPrice).toString() : null,
+    nativeUsd,
+    fetchedAt: Date.now(),
+  };
+}
+
+/** eth_estimateGas, dibatasi ke router swap yang dikenal atau approve() ke router itu. */
+export async function estimateSwapGas(req: SwapGasRequest): Promise<{ gas: string; gasPriceWei: string | null }> {
+  const chain = SWAP_CHAINS[req.chain as "ERC20" | "BEP20"];
+  const cfg = getDexChainConfig(req.chain);
+  if (!chain || !cfg) throw new Error("Chain tidak didukung");
+  const rpcUrl = getRpcUrl(req.chain);
+  if (!rpcUrl) throw new Error(`${cfg.rpcEnv} belum diisi di .env`);
+  if (!EVM_ADDR.test(req.from) || !EVM_ADDR.test(req.to) || !/^0x[0-9a-fA-F]*$/.test(req.data)) throw new Error("Parameter tidak valid");
+  const routers = new Set(Object.values(chain.dexes).map((d) => d!.router.toLowerCase()));
+  const data = strip0x(req.data).toLowerCase();
+  const isRouter = routers.has(req.to.toLowerCase());
+  const isApprove = data.startsWith(SEL_APPROVE) && routers.has("0x" + data.slice(8 + 24, 8 + 64));
+  if (!isRouter && !isApprove) throw new Error("Target transaksi tidak diizinkan");
+  const [gas, gasPrice] = await Promise.all([
+    rpcRaw(rpcUrl, "eth_estimateGas", [{ from: req.from, to: req.to, data: req.data }]),
+    rpcRaw(rpcUrl, "eth_gasPrice", []).catch(() => null),
+  ]);
+  if (typeof gas !== "string") throw new Error("Estimasi gas gagal");
+  return { gas: BigInt(gas).toString(), gasPriceWei: typeof gasPrice === "string" ? BigInt(gasPrice).toString() : null };
 }

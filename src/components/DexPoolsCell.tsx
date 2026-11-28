@@ -19,6 +19,7 @@ import {
   type DexSimSide,
 } from "@/lib/dex-pools-types";
 import type { TokenContract } from "@/lib/types";
+import { isSwapEligible } from "@/lib/dex-swap-types";
 
 // ---------- konfigurasi antrian ----------
 const DEX_FRESH_MS = 5 * 60_000;
@@ -482,12 +483,20 @@ function SimCells({ row, side, symbol }: { row: DexSimRow | null | undefined; si
   );
 }
 
+function openSwap(result: DexPoolsResult, pool: DexPoolInfo) {
+  // ethers + modal dimuat hanya saat Swap diklik (tidak membebani tabel utama).
+  void import("@/components/DexSwapModal").then((m) =>
+    m.openDexSwap({ chain: result.chain, contract: result.contract, symbol: result.symbol, pool }),
+  );
+}
+
 export function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUsd: number | null }) {
   const bestMid = result.bestMidUsd ?? result.bestExecUsd;
   const bestLabel = result.bestDex ? DEX_LABELS[result.bestDex] : "–";
   const chainName = result.chainName ?? (result.chain === "ERC20" ? "Ethereum" : result.chain);
   const hasCow = result.chain === "ERC20";
   const symbol = result.symbol ?? "token";
+  const swapChain = result.chain === "ERC20" || result.chain === "BEP20";
 
   // Simulasi hanya jalan setelah user mengubah arah / jumlah / klik Hitung.
   const [side, setSide] = useState<DexSimSide>("sell");
@@ -651,6 +660,7 @@ export function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUs
                 </>
               ) : null}
               <th>Status</th>
+              {swapChain ? <th>Swap</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -709,6 +719,25 @@ export function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUs
                     )}
                     {p.note ? <span className="dex-pop-note">{p.note}</span> : null}
                   </td>
+                  {swapChain ? (
+                    <td>
+                      {!p.untradeable && isSwapEligible(result.chain, p.dex) ? (
+                        <button
+                          type="button"
+                          className="dex-swap-btn"
+                          title={`Swap langsung lewat pool ${DEX_LABELS[p.dex]} ini (MetaMask)`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openSwap(result, p);
+                          }}
+                        >
+                          Swap
+                        </button>
+                      ) : (
+                        <span className="muted">–</span>
+                      )}
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -753,6 +782,7 @@ export function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUs
                     <span className="dex-pop-status is-bad">✗ {result.cow.error ?? ""}</span>
                   )}
                 </td>
+                {swapChain ? <td className="muted">–</td> : null}
               </tr>
             ) : null}
           </tbody>

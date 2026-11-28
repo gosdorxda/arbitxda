@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { getDexPools, getDexSim, getRpcEnvName, isDexChainSupported, isDexRpcReady } from "@/lib/dex-pools";
+import { estimateSwapGas, getDexPools, getDexSim, getRpcEnvName, getSwapQuote, isDexChainSupported, isDexRpcReady } from "@/lib/dex-pools";
+import type { SwapGasResponse, SwapQuoteRequest, SwapQuoteResponse } from "@/lib/dex-swap-types";
 import { isValidDexAddress, type DexPoolsResponse, type DexSimResponse } from "@/lib/dex-pools-types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-function reply(body: DexPoolsResponse | DexSimResponse, status = 200) {
+function reply(body: DexPoolsResponse | DexSimResponse | SwapQuoteResponse | SwapGasResponse, status = 200) {
   return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
@@ -20,11 +21,28 @@ export async function POST(request: Request) {
     mode?: unknown;
     side?: unknown;
     amountUsd?: unknown;
+    swap?: unknown;
+    gas?: unknown;
   } = {};
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return reply({ ok: false, code: "bad-request", error: "Body JSON tidak valid" }, 400);
+  }
+  // Swap (read-only): quote + allowance/saldo, dan estimasi gas. Tidak ada tanda tangan di server.
+  if (body.mode === "swapquote" || body.mode === "swapgas") {
+    try {
+      if (body.mode === "swapquote") {
+        const quote = await getSwapQuote(body.swap as SwapQuoteRequest);
+        return reply({ ok: true, quote });
+      }
+      const g = body.gas as { chain: string; from: string; to: string; data: string };
+      const { gas, gasPriceWei } = await estimateSwapGas(g);
+      return reply({ ok: true, gas, gasPriceWei });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply({ ok: false, error: message.slice(0, 240) });
+    }
   }
   const chain = typeof body.chain === "string" ? body.chain.trim().toUpperCase() : "";
   const contract = typeof body.contract === "string" ? body.contract.trim() : "";
