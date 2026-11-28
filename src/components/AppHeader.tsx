@@ -8,7 +8,7 @@ import { FontToggle } from "@/components/FontToggle";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 type AppHeaderProps = {
-  current: "tabel" | "compare" | "favorites" | "scanner" | "manifest";
+  current: "tabel" | "compare" | "favorites" | "scanner" | "manifest" | "pool";
   children?: ReactNode;
 };
 

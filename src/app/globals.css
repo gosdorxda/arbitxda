@@ -1940,3 +1940,58 @@ html[data-theme="light"] .compare-contract.is-native {
   text-decoration: underline;
   outline: none;
 }
+
+/* Halaman /pool */
+.pool-form {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pool-block {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.pool-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.pool-block-label { font-size: 13px; font-weight: 600; }
+.pool-block-chain {
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+.pool-block-addr {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-family: var(--font-num, monospace);
+  font-size: 11px;
+}
+.pool-block-refresh { margin-left: auto; height: 1.5rem; padding: 0 10px; font-size: 11px; }
+.pool-block-msg { padding: 12px; font-size: 12.5px; }
+.dex-pop.dex-pop-inline {
+  position: static;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.dex-pop-inline .dex-pop-body { overflow-x: auto; }

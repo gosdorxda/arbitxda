@@ -482,7 +482,7 @@ function SimCells({ row, side, symbol }: { row: DexSimRow | null | undefined; si
   );
 }
 
-function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUsd: number | null }) {
+export function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUsd: number | null }) {
   const bestMid = result.bestMidUsd ?? result.bestExecUsd;
   const bestLabel = result.bestDex ? DEX_LABELS[result.bestDex] : "–";
   const chainName = result.chainName ?? (result.chain === "ERC20" ? "Ethereum" : result.chain);
