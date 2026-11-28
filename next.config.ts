@@ -3,16 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // node:sqlite is a Node built-in; keep it external so Next does not bundle it.
   serverExternalPackages: ["node:sqlite"],
-  // Low-RAM build (VPS ~2GB): limit parallelism + skip typecheck/lint to avoid OOM.
-  experimental: {
-    cpus: 1,
-    workerThreads: false,
-  },
+  // Skip typecheck during build to cut build memory/time on the low-RAM VPS.
   typescript: {
     ignoreBuildErrors: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
   },
   turbopack: {
     rules: {
