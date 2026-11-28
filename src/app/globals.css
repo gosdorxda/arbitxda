@@ -1858,6 +1858,77 @@ html[data-theme="light"] .compare-contract.is-native {
 
 .dex-pop-empty { padding: 6px 10px; }
 
+/* Simulasi beli/jual di tooltip DEX */
+.dex-sim-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.dex-sim-label {
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.dex-sim-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.dex-sim-side {
+  padding: 1px 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+}
+.dex-sim-side + .dex-sim-side { border-left: 1px solid var(--border-strong); }
+.dex-sim-side:hover { color: var(--foreground); background: var(--hover); }
+.dex-sim-side.is-buy.is-on { color: var(--up); background: var(--up-soft); }
+.dex-sim-side.is-sell.is-on { color: var(--down); background: var(--down-soft); }
+.dex-sim-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--panel-2, var(--panel));
+}
+.dex-sim-amount input {
+  width: 80px;
+  padding: 2px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-num, monospace);
+  font-size: 11px;
+}
+.dex-sim-clear {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.dex-sim-clear:hover { color: var(--foreground); border-color: var(--border-strong); }
+.dex-sim-hint { font-size: 10.5px; }
+.dex-pop-table .dex-sim-col { background: color-mix(in srgb, var(--accent, #4c9aff) 5%, transparent); }
+.dex-pop-table th.dex-sim-col { background: color-mix(in srgb, var(--accent, #4c9aff) 10%, var(--panel-2, var(--panel))); }
+.dex-pop-table .dex-sim-result { font-weight: 600; }
+
 .dex-pop-link {
   color: var(--accent, #4c9aff);
   text-decoration: none;

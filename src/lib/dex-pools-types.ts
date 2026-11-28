@@ -74,13 +74,15 @@ export type DexPoolsResult = {
   refSource: string | null;
   pools: DexPoolInfo[];
   cow: DexCowInfo | null;
-  /** DEX dengan harga eksekusi jual terbaik. */
+  /** DEX dengan harga mid terbaik (tertinggi) antar DEX. */
   bestDex: DexId | null;
   bestPool: string | null;
+  /** Harga mid pool terbaik (USD). Nama lama dipertahankan untuk kompatibilitas. */
   bestExecUsd: number | null;
-  /** Selisih % harga eksekusi terbaik vs terburuk antar pool DEX tradable. */
+  bestMidUsd?: number | null;
+  /** Selisih % harga mid terbaik vs terburuk antar DEX. */
   gapPct: number | null;
-  /** Selisih % DEX terbaik vs CoW (positif = DEX lebih bagus). */
+  /** Selisih % mid DEX terbaik vs quote CoW (positif = DEX lebih tinggi). */
   vsCowPct: number | null;
   /** DEX yang punya pool/quote tradable. */
   dexes: DexId[];
@@ -91,6 +93,77 @@ export type DexPoolsResult = {
 export type DexPoolsResponse =
   | { ok: true; result: DexPoolsResult; cached: boolean }
   | { ok: false; code: "no-rpc" | "unsupported-chain" | "bad-request" | "error"; error: string };
+
+/** Pool di bawah likuiditas ini tidak ikut menentukan Best DEX / Gap (mid pool kering sering ngaco). */
+const SUMMARY_MIN_LIQ_USD = 1_000;
+
+/**
+ * Best-per-DEX dari harga MID: per DEX ambil mid tertinggi di antara pool tradable yang likuiditasnya
+ * >= SUMMARY_MIN_LIQ_USD (kalau tidak ada, pakai pool terdalam DEX itu). Lalu bandingkan antar DEX.
+ */
+export function summarizeMid(pools: DexPoolInfo[]): { best: DexPoolInfo | null; gapPct: number | null } {
+  const byDex = new Map<DexId, DexPoolInfo[]>();
+  for (const p of pools) {
+    if (p.untradeable || p.midUsd == null || !(p.midUsd > 0)) continue;
+    const list = byDex.get(p.dex) ?? [];
+    list.push(p);
+    byDex.set(p.dex, list);
+  }
+  const reps: DexPoolInfo[] = [];
+  for (const list of byDex.values()) {
+    const deep = list.filter((p) => (p.liquidityUsd ?? 0) >= SUMMARY_MIN_LIQ_USD);
+    const pick = deep.length
+      ? deep.reduce((a, b) => ((b.midUsd ?? 0) > (a.midUsd ?? 0) ? b : a))
+      : list.reduce((a, b) => ((b.liquidityUsd ?? -1) > (a.liquidityUsd ?? -1) ? b : a));
+    reps.push(pick);
+  }
+  let best: DexPoolInfo | null = null;
+  let worst: DexPoolInfo | null = null;
+  for (const p of reps) {
+    if (!best || (p.midUsd ?? 0) > (best.midUsd ?? 0)) best = p;
+    if (!worst || (p.midUsd ?? 0) < (worst.midUsd ?? 0)) worst = p;
+  }
+  const gapPct = best && worst && best !== worst ? ((best.midUsd! - worst.midUsd!) / worst.midUsd!) * 100 : null;
+  return { best, gapPct };
+}
+
+// ---------- simulasi beli/jual (on-demand dari tooltip) ----------
+
+export type DexSimSide = "buy" | "sell";
+
+export type DexSimRow = {
+  /** Harga eksekusi riil (USD per token) untuk ukuran simulasi. */
+  execUsd: number | null;
+  /** Price impact % (positif = lebih buruk) vs quote 1/100 ukuran. */
+  impactPct: number | null;
+  /** Jual: USD diterima; Beli: jumlah token diterima. */
+  result: number | null;
+  note?: string;
+};
+
+export type DexSimResult = {
+  chain: string;
+  contract: string;
+  side: DexSimSide;
+  amountUsd: number;
+  resultUnit: "USD" | "TOKEN";
+  /** Key = dexPoolKey(pool). */
+  rows: Record<string, DexSimRow>;
+  cow: DexSimRow | null;
+  bestKey: string | null;
+  fetchedAt: number;
+  warnings: string[];
+};
+
+export type DexSimResponse =
+  | { ok: true; sim: DexSimResult; cached: boolean }
+  | { ok: false; code: "no-rpc" | "unsupported-chain" | "bad-request" | "error"; error: string };
+
+export const DEX_SIM_COW_KEY = "cow";
+
+export function dexPoolKey(p: Pick<DexPoolInfo, "dex" | "pool" | "pair">): string {
+  return `${p.dex}:${p.pool}:${p.pair}`;
+}
 
 /** Label chain (hasil shortChainLabel) yang punya detektor. */
 export const DEX_SUPPORTED_CHAINS = ["ERC20", "BEP20", "SOL"] as const;

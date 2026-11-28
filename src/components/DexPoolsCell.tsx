@@ -6,11 +6,17 @@ import { shortChainLabel } from "@/lib/contracts";
 import { formatAmountCompact, formatPrice, formatUsdCompact } from "@/lib/format";
 import {
   DEX_LABELS,
+  DEX_SIM_COW_KEY,
   DEX_SUPPORTED_CHAINS,
+  dexPoolKey,
   isValidDexAddress,
   type DexPoolInfo,
   type DexPoolsResponse,
   type DexPoolsResult,
+  type DexSimResponse,
+  type DexSimResult,
+  type DexSimRow,
+  type DexSimSide,
 } from "@/lib/dex-pools-types";
 import type { TokenContract } from "@/lib/types";
 
@@ -21,7 +27,7 @@ const DEX_NO_RPC_RECHECK_MS = 60_000;
 const DEX_CONCURRENCY = 2;
 const DEX_JOB_GAP_MS = 350;
 const DEX_MAX_RETRIES = 3;
-const DEX_STORAGE_KEY = "arbit-dex-pools-cache";
+const DEX_STORAGE_KEY = "arbit-dex-pools-cache-v2"; // v2: ringkasan pakai harga mid
 const DEX_MAX_STORED = 150;
 const COMPARE_SETTINGS_KEY = "arbit.compare.settings.v4";
 
@@ -399,10 +405,132 @@ function fmtUsdPrice(value: number | null | undefined): string {
   return value != null && Number.isFinite(value) ? `$${formatPrice(value)}` : "–";
 }
 
-function DexTooltip({ result }: { result: DexPoolsResult }) {
+// ---------- simulasi (on-demand) ----------
+const SIM_FRESH_MS = 30_000;
+const simCache = new Map<string, { at: number; sim: DexSimResult }>();
+
+type SimState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; sim: DexSimResult }
+  | { status: "error"; error: string };
+
+async function fetchSim(
+  result: DexPoolsResult,
+  side: DexSimSide,
+  amountUsd: number,
+  hintUsd: number | null,
+  signal: AbortSignal,
+): Promise<DexSimResult> {
+  const key = `${result.chain}|${result.contract}|${side}|${amountUsd}`;
+  const hit = simCache.get(key);
+  if (hit && Date.now() - hit.at < SIM_FRESH_MS) return hit.sim;
+  const response = await fetch("/api/dex-pools", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    signal,
+    body: JSON.stringify({
+      mode: "sim",
+      chain: result.chain,
+      contract: result.contract,
+      sizeUsd: result.sizeUsd,
+      hintUsd,
+      side,
+      amountUsd,
+    }),
+  });
+  const data = (await response.json().catch(() => null)) as DexSimResponse | null;
+  if (!data) throw new Error(`HTTP ${response.status}`);
+  if (!data.ok) throw new Error(data.error);
+  simCache.set(key, { at: Date.now(), sim: data.sim });
+  return data.sim;
+}
+
+function SimCells({ row, side, symbol }: { row: DexSimRow | null | undefined; side: DexSimSide; symbol: string }) {
+  if (!row) {
+    return (
+      <>
+        <td className="num dex-sim-col">–</td>
+        <td className="num dex-sim-col">–</td>
+        <td className="num dex-sim-col">–</td>
+      </>
+    );
+  }
+  return (
+    <>
+      <td className="num dex-sim-col" title={row.note}>
+        {fmtUsdPrice(row.execUsd)}
+      </td>
+      <td className={`num dex-sim-col${row.impactPct != null && row.impactPct > 5 ? " down" : ""}`} title={row.note}>
+        {row.impactPct != null ? `${row.impactPct.toFixed(2)}%` : "–"}
+      </td>
+      <td className="num dex-sim-col dex-sim-result" title={row.note}>
+        {row.result != null ? (
+          side === "sell" ? (
+            formatUsdCompact(row.result)
+          ) : (
+            <>
+              {formatAmountCompact(row.result)} <span className="muted">{symbol}</span>
+            </>
+          )
+        ) : (
+          <span className="muted">{row.note && row.note.length <= 28 ? row.note : "–"}</span>
+        )}
+      </td>
+    </>
+  );
+}
+
+function DexTooltip({ result, hintUsd }: { result: DexPoolsResult; hintUsd: number | null }) {
+  const bestMid = result.bestMidUsd ?? result.bestExecUsd;
   const bestLabel = result.bestDex ? DEX_LABELS[result.bestDex] : "–";
   const chainName = result.chainName ?? (result.chain === "ERC20" ? "Ethereum" : result.chain);
   const hasCow = result.chain === "ERC20";
+  const symbol = result.symbol ?? "token";
+
+  // Simulasi hanya jalan setelah user mengubah arah / jumlah / klik Hitung.
+  const [side, setSide] = useState<DexSimSide>("sell");
+  const [amountText, setAmountText] = useState(() => String(readSizeUsd()));
+  const [active, setActive] = useState(false);
+  const [runId, setRunId] = useState(0);
+  const [sim, setSim] = useState<SimState>({ status: "idle" });
+  const amountUsd = Number(amountText.replace(",", "."));
+  const amountValid = Number.isFinite(amountUsd) && amountUsd > 0;
+
+  useEffect(() => {
+    if (!active) return;
+    if (!amountValid) {
+      setSim({ status: "error", error: "Jumlah tidak valid" });
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => {
+      setSim({ status: "loading" });
+      fetchSim(result, side, Math.round(amountUsd * 100) / 100, hintUsd, ctrl.signal)
+        .then((value) => setSim({ status: "ok", sim: value }))
+        .catch((error: unknown) => {
+          if (ctrl.signal.aborted) return;
+          setSim({ status: "error", error: error instanceof Error ? error.message : String(error) });
+        });
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, side, amountText, runId, result.chain, result.contract]);
+
+  const simData = active && sim.status === "ok" && sim.sim.side === side ? sim.sim : null;
+  const showSim = active;
+  const bestSimKey = simData?.bestKey ?? null;
+
+  const rowClass = (p: DexPoolInfo): string => {
+    if (p.untradeable) return "is-untradeable";
+    if (showSim) return bestSimKey === dexPoolKey(p) ? "is-best" : "";
+    return p.pool === result.bestPool ? "is-best" : "";
+  };
+
   return (
     <>
       <div className="dex-pop-head">
@@ -418,10 +546,10 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
       </div>
       <div className="dex-pop-summary">
         <div className="dex-pop-stat">
-          <span className="dex-pop-stat-label">Best DEX</span>
+          <span className="dex-pop-stat-label">Best DEX (mid)</span>
           <span className="dex-pop-stat-value">
             {bestLabel}
-            {result.bestExecUsd != null ? <span className="muted"> @ {fmtUsdPrice(result.bestExecUsd)}</span> : null}
+            {bestMid != null ? <span className="muted"> @ {fmtUsdPrice(bestMid)}</span> : null}
           </span>
         </div>
         <div className="dex-pop-stat">
@@ -434,10 +562,6 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
             <span className="dex-pop-stat-value">{fmtPct(result.vsCowPct)}</span>
           </div>
         ) : null}
-        <div className="dex-pop-stat">
-          <span className="dex-pop-stat-label">Ukuran trade (jual)</span>
-          <span className="dex-pop-stat-value">{formatUsdCompact(result.sizeUsd)}</span>
-        </div>
         {result.refUsd != null ? (
           <div className="dex-pop-stat">
             <span className="dex-pop-stat-label">Harga ref</span>
@@ -445,6 +569,67 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
               {fmtUsdPrice(result.refUsd)}
             </span>
           </div>
+        ) : null}
+      </div>
+      <div className="dex-sim-bar" onClick={(e) => e.stopPropagation()}>
+        <span className="dex-sim-label">Simulasi</span>
+        <div className="dex-sim-toggle" role="group" aria-label="Arah simulasi">
+          {(["buy", "sell"] as DexSimSide[]).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={`dex-sim-side is-${s}${active && side === s ? " is-on" : ""}`}
+              onClick={() => {
+                setSide(s);
+                setActive(true);
+                setRunId((v) => v + 1);
+              }}
+            >
+              {s === "buy" ? "Beli" : "Jual"}
+            </button>
+          ))}
+        </div>
+        <label className="dex-sim-amount">
+          <span className="muted">$</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={amountText}
+            onChange={(e) => {
+              setAmountText(e.target.value);
+              setActive(true);
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") {
+                setActive(true);
+                setRunId((v) => v + 1);
+              }
+            }}
+            aria-label="Jumlah simulasi (USD)"
+          />
+        </label>
+        {active ? (
+          <button
+            type="button"
+            className="dex-sim-clear"
+            title="Tutup simulasi (kembali ke harga mid)"
+            onClick={() => {
+              setActive(false);
+              setSim({ status: "idle" });
+            }}
+          >
+            ×
+          </button>
+        ) : (
+          <span className="muted dex-sim-hint">pilih Beli/Jual untuk hitung</span>
+        )}
+        {active && sim.status === "loading" ? <span className="muted dex-sim-hint">menghitung…</span> : null}
+        {active && sim.status === "error" ? <span className="down dex-sim-hint" title={sim.error}>✗ {sim.error.slice(0, 60)}</span> : null}
+        {active && simData ? (
+          <span className="muted dex-sim-hint">
+            {side === "sell" ? `jual ${symbol} senilai $${amountText} → base pool` : `beli ${symbol} pakai $${amountText} base pool`}
+          </span>
         ) : null}
       </div>
       <div className="dex-pop-body">
@@ -457,75 +642,82 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
               <th className="num">Fee</th>
               <th className="num">Reserve</th>
               <th className="num">Likuiditas</th>
-              <th className="num">Harga eksekusi</th>
-              <th className="num">Impact</th>
+              <th className="num" title="Harga mid (spot) pool, tanpa slippage">Harga</th>
+              {showSim ? (
+                <>
+                  <th className="num dex-sim-col">Harga eks.</th>
+                  <th className="num dex-sim-col">Impact</th>
+                  <th className="num dex-sim-col">{side === "sell" ? "Dapat (USD)" : `Dapat (${symbol})`}</th>
+                </>
+              ) : null}
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {result.pools.map((p) => (
+            {result.pools.map((p) => {
+              const key = dexPoolKey(p);
+              const row = simData?.rows[key];
+              return (
+                <tr key={key} className={rowClass(p)}>
+                  <td>
+                    <ExtLink href={dexPoolUrl(p, result.chain)} title={`Buka pool di ${DEX_LABELS[p.dex]}`}>
+                      {DEX_LABELS[p.dex]} ↗
+                    </ExtLink>
+                  </td>
+                  <td>
+                    <span className="dex-pop-pair">{p.pair}</span>
+                    <CopyAddr address={p.quoteToken} label={<CopyGlyph />} />
+                  </td>
+                  <td>
+                    <ExtLink href={dexPoolUrl(p, result.chain)} title={`${p.pool} — buka pool di ${DEX_LABELS[p.dex]}`}>
+                      {shortAddr(p.pool)}
+                    </ExtLink>
+                    <CopyAddr address={p.pool} label={<CopyGlyph />} />
+                  </td>
+                  <td className="num">{p.feePct != null ? `${p.feePct}%` : "–"}</td>
+                  <td className="num">
+                    {p.reserveToken != null || p.reserveQuote != null ? (
+                      <>
+                        {formatAmountCompact(p.reserveToken)}
+                        <span className="muted"> / </span>
+                        {formatAmountCompact(p.reserveQuote)} <span className="muted">{p.quoteSymbol}</span>
+                      </>
+                    ) : (
+                      "–"
+                    )}
+                  </td>
+                  <td className="num">{p.liquidityUsd != null ? formatUsdCompact(p.liquidityUsd) : "–"}</td>
+                  <td className="num">{p.midUsd != null ? fmtUsdPrice(p.midUsd) : "–"}</td>
+                  {showSim ? (
+                    p.untradeable ? (
+                      <SimCells row={null} side={side} symbol={symbol} />
+                    ) : simData ? (
+                      <SimCells row={row} side={side} symbol={symbol} />
+                    ) : (
+                      <>
+                        <td className="num dex-sim-col muted">…</td>
+                        <td className="num dex-sim-col muted">…</td>
+                        <td className="num dex-sim-col muted">…</td>
+                      </>
+                    )
+                  ) : null}
+                  <td title={p.note}>
+                    {p.untradeable ? (
+                      <span className="dex-pop-status is-bad">untradeable</span>
+                    ) : (
+                      <span className="dex-pop-status is-ok">OK</span>
+                    )}
+                    {p.note ? <span className="dex-pop-note">{p.note}</span> : null}
+                  </td>
+                </tr>
+              );
+            })}
+            {result.cow ? (
               <tr
-                key={`${p.dex}:${p.pool}:${p.pair}`}
                 className={
-                  p.untradeable
-                    ? "is-untradeable"
-                    : p.pool === result.bestPool && !p.note?.startsWith("router")
-                      ? "is-best"
-                      : ""
+                  !result.cow.ok ? "is-untradeable" : showSim && bestSimKey === DEX_SIM_COW_KEY ? "is-best" : ""
                 }
               >
-                <td>
-                  <ExtLink href={dexPoolUrl(p, result.chain)} title={`Buka pool di ${DEX_LABELS[p.dex]}`}>
-                    {DEX_LABELS[p.dex]} ↗
-                  </ExtLink>
-                </td>
-                <td>
-                  <span className="dex-pop-pair">{p.pair}</span>
-                  <CopyAddr address={p.quoteToken} label={<CopyGlyph />} />
-                </td>
-                <td>
-                  <ExtLink href={dexPoolUrl(p, result.chain)} title={`${p.pool} — buka pool di ${DEX_LABELS[p.dex]}`}>
-                    {shortAddr(p.pool)}
-                  </ExtLink>
-                  <CopyAddr address={p.pool} label={<CopyGlyph />} />
-                </td>
-                <td className="num">{p.feePct != null ? `${p.feePct}%` : "–"}</td>
-                <td className="num">
-                  {p.reserveToken != null || p.reserveQuote != null ? (
-                    <>
-                      {formatAmountCompact(p.reserveToken)}
-                      <span className="muted"> / </span>
-                      {formatAmountCompact(p.reserveQuote)} <span className="muted">{p.quoteSymbol}</span>
-                    </>
-                  ) : (
-                    "–"
-                  )}
-                </td>
-                <td className="num">{p.liquidityUsd != null ? formatUsdCompact(p.liquidityUsd) : "–"}</td>
-                <td className="num" title={p.execUsd == null && p.midUsd != null ? `Harga mid ${fmtUsdPrice(p.midUsd)}` : undefined}>
-                  {p.execUsd != null ? (
-                    fmtUsdPrice(p.execUsd)
-                  ) : p.midUsd != null && !p.untradeable ? (
-                    <span className="muted">mid {fmtUsdPrice(p.midUsd)}</span>
-                  ) : (
-                    "–"
-                  )}
-                </td>
-                <td className={`num${p.impactPct != null && p.impactPct > 5 ? " down" : ""}`}>
-                  {p.impactPct != null ? `${p.impactPct.toFixed(2)}%` : "–"}
-                </td>
-                <td title={p.note}>
-                  {p.untradeable ? (
-                    <span className="dex-pop-status is-bad">untradeable</span>
-                  ) : (
-                    <span className="dex-pop-status is-ok">OK</span>
-                  )}
-                  {p.note ? <span className="dex-pop-note">{p.note}</span> : null}
-                </td>
-              </tr>
-            ))}
-            {result.cow ? (
-              <tr className={result.cow.ok ? "" : "is-untradeable"}>
                 <td>
                   <ExtLink href={cowSwapUrl(result.contract, result.cow.buyToken)} title="Buka swap di CoW Swap">
                     CoW ↗
@@ -540,8 +732,20 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
                 <td className="num">–</td>
                 <td className="num">–</td>
                 <td className="num">–</td>
-                <td className="num">{fmtUsdPrice(result.cow.execUsd)}</td>
-                <td className="num">–</td>
+                <td className="num" title="Quote CoW indikatif (dipakai sebagai harga mid)">
+                  {fmtUsdPrice(result.cow.execUsd)}
+                </td>
+                {showSim ? (
+                  simData ? (
+                    <SimCells row={simData.cow ?? { execUsd: null, impactPct: null, result: null }} side={side} symbol={symbol} />
+                  ) : (
+                    <>
+                      <td className="num dex-sim-col muted">…</td>
+                      <td className="num dex-sim-col muted">…</td>
+                      <td className="num dex-sim-col muted">…</td>
+                    </>
+                  )
+                ) : null}
                 <td title={result.cow.error}>
                   {result.cow.ok ? (
                     <span className="dex-pop-status is-ok">✓ quote</span>
@@ -555,6 +759,7 @@ function DexTooltip({ result }: { result: DexPoolsResult }) {
         </table>
         {result.pools.length === 0 && !result.cow?.ok ? <div className="muted dex-pop-empty">Tidak ada pool yang cocok.</div> : null}
         {result.warnings.length ? <div className="muted dex-pop-empty">{result.warnings.join(" · ")}</div> : null}
+        {simData?.warnings.length ? <div className="muted dex-pop-empty">Simulasi: {simData.warnings.join(" · ")}</div> : null}
       </div>
     </>
   );
@@ -597,13 +802,17 @@ export const DexPoolsCell = memo(function DexPoolsCell({
 
   useEffect(() => {
     if (!open) return;
+    // Kolom simulasi bikin tooltip melebar -> posisikan ulang saat ukurannya berubah.
+    const ro = typeof ResizeObserver !== "undefined" && popRef.current ? new ResizeObserver(() => place()) : null;
+    if (ro && popRef.current) ro.observe(popRef.current);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      ro?.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, place]);
+  }, [open, place, state.kind]);
 
   if (!target || state.kind === "none") {
     return <span className="muted" title={target ? "" : "Tidak ada kontrak ERC20 / BEP20 / Solana"}>-</span>;
@@ -635,7 +844,12 @@ export const DexPoolsCell = memo(function DexPoolsCell({
   };
   const scheduleHide = () => {
     window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => setOpen(false), HIDE_DELAY_MS);
+    hideTimer.current = window.setTimeout(() => {
+      const pop = popRef.current;
+      // Jangan tutup selama kursor di atas tooltip atau input simulasi sedang fokus.
+      if (pop && (pop.matches(":hover") || pop.contains(document.activeElement))) return;
+      setOpen(false);
+    }, HIDE_DELAY_MS);
   };
 
   return (
@@ -668,8 +882,11 @@ export const DexPoolsCell = memo(function DexPoolsCell({
               style={{ top: pos.top, left: pos.left }}
               onMouseEnter={show}
               onMouseLeave={scheduleHide}
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) scheduleHide();
+              }}
             >
-              <DexTooltip result={result} />
+              <DexTooltip result={result} hintUsd={hintUsd} />
             </div>,
             document.body,
           )

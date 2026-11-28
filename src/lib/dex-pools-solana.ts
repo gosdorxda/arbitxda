@@ -6,7 +6,8 @@
  * Tidak memakai DexScreener.
  */
 import { sleep } from "./rate-limit";
-import type { DexId, DexPoolInfo, DexPoolsResult } from "./dex-pools-types";
+import { dexPoolKey, summarizeMid } from "./dex-pools-types";
+import type { DexId, DexPoolInfo, DexPoolsResult, DexSimResult, DexSimRow, DexSimSide } from "./dex-pools-types";
 
 type SolBase = { symbol: string; mint: string; decimals: number; stable: boolean };
 
@@ -17,7 +18,6 @@ const SOL_BASES: SolBase[] = [
   { symbol: "USDC", mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6, stable: true },
   { symbol: "USDT", mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6, stable: true },
 ];
-const USDC = SOL_BASES[1];
 const MAX_POOLS_PER_DEX = 6;
 const RETRIES = 3;
 
@@ -142,7 +142,6 @@ export async function detectSolanaPools(
   const warnings: string[] = [];
   const sizeUsd = opts.sizeUsd;
   const baseByMint = new Map(SOL_BASES.map((b) => [b.mint, b]));
-  const isBase = baseByMint.has(mint);
   const rpcUrl = process.env[SOL_RPC_ENV]?.trim() || null;
 
   const [priceRes, rayRes, orcaRes, rpcDec] = await Promise.all([
@@ -271,75 +270,12 @@ export async function detectSolanaPools(
     refSource = "harga CEX (exchange)";
   }
 
-  // ---- Harga eksekusi Raydium (router resmi Raydium; jual token -> USDC/SOL) ----
-  if (refUsd && decimals != null && !isBase && pools.some((p) => p.dex === "raydium" && !p.untradeable)) {
-    const amountIn = toRaw(sizeUsd / refUsd, decimals);
-    const out = USDC;
-    try {
-      const json = (await fetchJson(
-        `https://transaction-v1.raydium.io/compute/swap-base-in?inputMint=${mint}&outputMint=${out.mint}&amount=${amountIn}&slippageBps=50&txVersion=V0`,
-      )) as {
-        success?: boolean;
-        msg?: string;
-        data?: { outputAmount?: string; priceImpactPct?: number; routePlan?: Array<{ poolId: string }> };
-      };
-      if (json?.success && json.data?.outputAmount) {
-        const inHuman = fromRaw(amountIn, decimals) ?? 0;
-        const outHuman = fromRaw(json.data.outputAmount, out.decimals) ?? 0;
-        const exec = inHuman > 0 ? outHuman / inHuman : null;
-        const route = json.data.routePlan ?? [];
-        const impact = num(json.data.priceImpactPct);
-        const single = route.length === 1 ? pools.find((p) => p.dex === "raydium" && p.pool === route[0].poolId) : undefined;
-        if (single) {
-          single.execUsd = exec;
-          single.impactPct = impact;
-        } else if (route.length > 0) {
-          pools.unshift({
-            base: out,
-            dex: "raydium",
-            pool: route[0].poolId,
-            pair: `${symbol ?? "TOKEN"}→${out.symbol} (rute)`,
-            quoteToken: out.mint,
-            quoteSymbol: out.symbol,
-            feePct: null,
-            reserveToken: null,
-            reserveQuote: null,
-            liquidityUsd: null,
-            midUsd: null,
-            execUsd: exec,
-            impactPct: impact,
-            untradeable: false,
-            note: `router Raydium · ${route.length} hop`,
-          });
-        }
-      } else {
-        warnings.push(`Raydium quote: ${json?.msg ?? "gagal"}`);
-      }
-    } catch (error) {
-      warnings.push(`Raydium quote: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (pools.some((p) => p.dex === "orca")) warnings.push("Orca: tanpa API quote resmi -> harga mid + likuiditas, impact '-'");
+  // Default = harga mid saja; harga eksekusi Raydium dihitung on-demand lewat simulasi (simulateSolanaPools).
+  if (pools.some((p) => p.dex === "orca")) warnings.push("Orca: tanpa API quote resmi -> simulasi '–'");
 
-  // ---- Ringkasan ----
-  // Orca tidak punya quote eksekusi resmi, jadi supaya adil Best DEX + Gap dibandingkan pakai
-  // harga mid pool TERDALAM (likuiditas terbesar) per DEX. Pool dangkal tidak ikut menentukan.
-  const deepestPerDex = new Map<DexId, DexPoolInfo>();
-  for (const p of pools) {
-    if (p.untradeable || p.midUsd == null || p.liquidityUsd == null) continue;
-    const cur = deepestPerDex.get(p.dex);
-    if (!cur || p.liquidityUsd > (cur.liquidityUsd ?? 0)) deepestPerDex.set(p.dex, p);
-  }
-  let best: DexPoolInfo | null = null;
-  let worst: DexPoolInfo | null = null;
-  for (const p of deepestPerDex.values()) {
-    if (!best || (p.midUsd ?? 0) > (best.midUsd ?? 0)) best = p;
-    if (!worst || (p.midUsd ?? 0) < (worst.midUsd ?? 0)) worst = p;
-  }
+  // ---- Ringkasan (harga mid, best-per-DEX) ----
+  const { best, gapPct } = summarizeMid(pools);
   const bestV = best?.midUsd ?? null;
-  const worstV = worst?.midUsd ?? null;
-  const gapPct = best && worst && best !== worst && bestV && worstV ? ((bestV - worstV) / worstV) * 100 : null;
-  if (deepestPerDex.size > 0) warnings.push("Solana: Best DEX & Gap pakai harga mid pool terdalam per DEX");
 
   const dexSet = new Set<DexId>();
   for (const p of pools) if (!p.untradeable) dexSet.add(p.dex);
@@ -351,7 +287,6 @@ export async function detectSolanaPools(
     .sort(
       (a, b) =>
         Number(a.untradeable) - Number(b.untradeable) ||
-        Number(b.execUsd != null) - Number(a.execUsd != null) ||
         (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1),
     );
 
@@ -369,10 +304,140 @@ export async function detectSolanaPools(
     bestDex: best?.dex ?? null,
     bestPool: best?.pool ?? null,
     bestExecUsd: bestV ?? null,
+    bestMidUsd: bestV ?? null,
     gapPct,
     vsCowPct: null,
     dexes: (["raydium", "orca"] as DexId[]).filter((d) => dexSet.has(d)),
     fetchedAt: Date.now(),
     warnings,
   };
+}
+
+// ---------- simulasi beli/jual (on-demand) ----------
+
+type RaydiumCompute = {
+  success?: boolean;
+  msg?: string;
+  data?: { outputAmount?: string; routePlan?: Array<{ poolId: string }> };
+};
+
+async function raydiumQuote(inputMint: string, outputMint: string, amountRaw: string): Promise<{ out: string; route: string[] } | { error: string }> {
+  if (amountRaw === "0") return { error: "jumlah 0" };
+  try {
+    const json = (await fetchJson(
+      `https://transaction-v1.raydium.io/compute/swap-base-in?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=50&txVersion=V0`,
+    )) as RaydiumCompute;
+    if (json?.success && json.data?.outputAmount) {
+      return { out: json.data.outputAmount, route: (json.data.routePlan ?? []).map((r) => r.poolId) };
+    }
+    return { error: json?.msg ?? "quote gagal" };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Simulasi per pool pakai base token pool itu sendiri.
+ * Jual = token -> base pool; Beli = base pool -> token. Raydium via compute/swap-base-in (router resmi,
+ * dihitung sekali per base token lalu ditempel ke pool Raydium yang dipakai rute / pool terdalam base itu).
+ * Orca tidak punya API quote HTTP resmi -> '–'.
+ */
+export async function simulateSolanaPools(result: DexPoolsResult, side: DexSimSide, amountUsd: number): Promise<DexSimResult> {
+  const warnings: string[] = [];
+  const rows: Record<string, DexSimRow> = {};
+  const mint = result.contract;
+  const decimals = result.decimals;
+  const baseByMint = new Map(SOL_BASES.map((b) => [b.mint, b]));
+  const out: DexSimResult = {
+    chain: "SOL",
+    contract: mint,
+    side,
+    amountUsd,
+    resultUnit: side === "sell" ? "USD" : "TOKEN",
+    rows,
+    cow: null,
+    bestKey: null,
+    fetchedAt: Date.now(),
+    warnings,
+  };
+  if (decimals == null) {
+    warnings.push("Desimal token tidak diketahui");
+    return out;
+  }
+  let solUsd: number | null = null;
+  try {
+    const pr = (await fetchJson(`https://api-v3.raydium.io/mint/price?mints=${WSOL.mint}`)) as { data?: Record<string, string> };
+    solUsd = num(pr?.data?.[WSOL.mint]);
+  } catch (error) {
+    warnings.push(`Raydium price: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const baseUsd = (b: SolBase): number | null => (b.stable ? 1 : solUsd);
+
+  for (const p of result.pools) {
+    if (p.dex === "orca") rows[dexPoolKey(p)] = { execUsd: null, impactPct: null, result: null, note: "Orca tanpa API quote" };
+  }
+
+  const ray = result.pools.filter((p) => p.dex === "raydium" && !p.untradeable);
+  const basesUsed = [...new Set(ray.map((p) => p.quoteToken))];
+  const refUsd = result.refUsd;
+  for (const baseMint of basesUsed) {
+    const base = baseByMint.get(baseMint);
+    if (!base) continue;
+    const bu = baseUsd(base);
+    const poolsOfBase = ray.filter((p) => p.quoteToken === baseMint);
+    const deepest = poolsOfBase.reduce((a, b) => ((b.liquidityUsd ?? -1) > (a.liquidityUsd ?? -1) ? b : a));
+    if (bu == null || (side === "sell" && !refUsd)) {
+      for (const p of poolsOfBase) rows[dexPoolKey(p)] = { execUsd: null, impactPct: null, result: null, note: "harga USD tidak ada" };
+      continue;
+    }
+    const inMint = side === "sell" ? mint : baseMint;
+    const outMint = side === "sell" ? baseMint : mint;
+    const inDec = side === "sell" ? decimals : base.decimals;
+    const outDec = side === "sell" ? base.decimals : decimals;
+    const inHuman = side === "sell" ? amountUsd / refUsd! : amountUsd / bu;
+    const full = await raydiumQuote(inMint, outMint, toRaw(inHuman, inDec));
+    await sleep(150);
+    const small = await raydiumQuote(inMint, outMint, toRaw(inHuman / 100, inDec));
+    if ("error" in full) {
+      rows[dexPoolKey(deepest)] = { execUsd: null, impactPct: null, result: null, note: `Raydium: ${full.error}`.slice(0, 120) };
+      continue;
+    }
+    const outHuman = fromRaw(full.out, outDec) ?? 0;
+    const smallOut = "out" in small ? fromRaw(small.out, outDec) ?? 0 : 0;
+    let row: DexSimRow;
+    if (side === "sell") {
+      const usd = outHuman * bu;
+      const exec = inHuman > 0 ? usd / inHuman : null;
+      const smallExec = smallOut > 0 ? (smallOut * bu) / (inHuman / 100) : null;
+      row = {
+        execUsd: exec,
+        result: usd,
+        impactPct: exec != null && smallExec ? Math.max(0, ((smallExec - exec) / smallExec) * 100) : null,
+      };
+    } else {
+      const exec = outHuman > 0 ? amountUsd / outHuman : null;
+      const smallExec = smallOut > 0 ? amountUsd / 100 / smallOut : null;
+      row = {
+        execUsd: exec,
+        result: outHuman,
+        impactPct: exec != null && smallExec ? Math.max(0, ((exec - smallExec) / smallExec) * 100) : null,
+      };
+    }
+    const routePool = full.route.length === 1 ? poolsOfBase.find((p) => p.pool === full.route[0]) : undefined;
+    const target = routePool ?? deepest;
+    if (!routePool) row.note = `router Raydium · ${full.route.length} hop`;
+    rows[dexPoolKey(target)] = row;
+    for (const p of poolsOfBase) {
+      if (p !== target) rows[dexPoolKey(p)] ??= { execUsd: null, impactPct: null, result: null, note: "rute Raydium lewat pool lain" };
+    }
+  }
+
+  let bestVal = -1;
+  for (const [key, row] of Object.entries(rows)) {
+    if (row.result != null && row.result > bestVal) {
+      bestVal = row.result;
+      out.bestKey = key;
+    }
+  }
+  return out;
 }

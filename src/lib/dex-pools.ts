@@ -5,8 +5,9 @@
  * CoW: quote resmi api.cow.fi. Tidak memakai DexScreener.
  */
 import { sleep } from "./rate-limit";
-import { detectSolanaPools, SOL_RPC_ENV } from "./dex-pools-solana";
-import type { DexCowInfo, DexId, DexPoolInfo, DexPoolsResult } from "./dex-pools-types";
+import { detectSolanaPools, simulateSolanaPools, SOL_RPC_ENV } from "./dex-pools-solana";
+import { DEX_SIM_COW_KEY, dexPoolKey, summarizeMid } from "./dex-pools-types";
+import type { DexCowInfo, DexId, DexPoolInfo, DexPoolsResult, DexSimResult, DexSimRow, DexSimSide } from "./dex-pools-types";
 
 // ---------- konfigurasi per chain ----------
 
@@ -809,7 +810,9 @@ export async function detectDexPools(chainKey: string, contractRaw: string, opts
     if (c.info.untradeable) continue;
     const bu = baseUsd(c.base);
     const o = sizeOut.get(c);
-    if (amountIn > BigInt(0) && (!o || o === BigInt(0))) {
+    const so0 = smallOut.get(c);
+    // Mode mid: pool baru untradeable kalau quote KECIL pun gagal (quote ukuran penuh gagal = cuma likuiditas tipis).
+    if (amountIn > BigInt(0) && (!so0 || so0 === BigInt(0)) && (!o || o === BigInt(0))) {
       c.info.untradeable = true;
       c.info.note = c.info.note ? `${c.info.note} · quote gagal` : "quote gagal / likuiditas kurang";
       continue;
@@ -845,22 +848,10 @@ export async function detectDexPools(chainKey: string, contractRaw: string, opts
     cow = { ok: false, buyToken: cfg.weth.symbol, execUsd: null, error: "tanpa harga referensi" };
   }
 
-  // ---- ringkasan ----
-  // Best per DEX (pool tradable dengan harga eksekusi jual tertinggi), lalu bandingkan antar DEX.
-  const bestPerDex = new Map<DexId, Candidate>();
-  for (const c of candidates) {
-    if (c.info.untradeable || c.info.execUsd == null) continue;
-    const cur = bestPerDex.get(c.info.dex);
-    if (!cur || c.info.execUsd > (cur.info.execUsd ?? 0)) bestPerDex.set(c.info.dex, c);
-  }
-  let best: Candidate | null = null;
-  let worst: Candidate | null = null;
-  for (const c of bestPerDex.values()) {
-    if (!best || (c.info.execUsd ?? 0) > (best.info.execUsd ?? 0)) best = c;
-    if (!worst || (c.info.execUsd ?? 0) < (worst.info.execUsd ?? 0)) worst = c;
-  }
-  const gapPct = best && worst && best !== worst ? pct(best.info.execUsd!, worst.info.execUsd!) : null;
-  const vsCowPct = best && cow?.ok && cow.execUsd ? pct(best.info.execUsd!, cow.execUsd) : null;
+  // ---- ringkasan (semua dari harga MID) ----
+  const { best, gapPct } = summarizeMid(candidates.map((c) => c.info));
+  const bestMid = best?.midUsd ?? null;
+  const vsCowPct = bestMid != null && cow?.ok && cow.execUsd ? pct(bestMid, cow.execUsd) : null;
 
   const dexSet = new Set<DexId>();
   for (const c of candidates) if (!c.info.untradeable) dexSet.add(c.info.dex);
@@ -869,7 +860,12 @@ export async function detectDexPools(chainKey: string, contractRaw: string, opts
 
   const pools = candidates
     .map((c) => c.info)
-    .sort((a, b) => Number(a.untradeable) - Number(b.untradeable) || (b.execUsd ?? -1) - (a.execUsd ?? -1));
+    .sort(
+      (a, b) =>
+        Number(a.untradeable) - Number(b.untradeable) ||
+        (b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1) ||
+        (b.midUsd ?? -1) - (a.midUsd ?? -1),
+    );
 
   return {
     chain: chainKey,
@@ -882,15 +878,220 @@ export async function detectDexPools(chainKey: string, contractRaw: string, opts
     refSource,
     pools,
     cow,
-    bestDex: best?.info.dex ?? null,
-    bestPool: best?.info.pool ?? null,
-    bestExecUsd: best?.info.execUsd ?? null,
+    bestDex: best?.dex ?? null,
+    bestPool: best?.pool ?? null,
+    bestExecUsd: bestMid,
+    bestMidUsd: bestMid,
     gapPct,
     vsCowPct,
     dexes: order.filter((d) => dexSet.has(d)),
     fetchedAt: Date.now(),
     warnings,
   };
+}
+
+// ---------- simulasi beli/jual (on-demand dari tooltip) ----------
+
+/**
+ * Simulasi per pool pakai base token pool itu sendiri:
+ * Jual = token -> base pool, Beli = base pool -> token. Ukuran = amountUsd.
+ * V3 (Uni/Pancake): QuoterV2 quoteExactInputSingle dua arah. V2 (Uni/Sushi/Pancake): rumus constant-product
+ * dari getReserves terbaru. Balancer: Vault.queryBatchSwap dua arah. Impact = quote penuh vs quote 1/100.
+ * CoW: quote indikatif arah jual saja (Beli '–').
+ */
+export async function simulateDexPools(result: DexPoolsResult, side: DexSimSide, amountUsd: number): Promise<DexSimResult> {
+  const chainKey = result.chain;
+  const cfg = getDexChainConfig(chainKey);
+  if (!cfg) throw new Error(`Chain ${chainKey} belum didukung`);
+  const rpcUrl = getRpcUrl(chainKey);
+  if (!rpcUrl) throw new Error(`${cfg.rpcEnv} belum diisi di .env`);
+  const contract = result.contract;
+  const decimals = result.decimals;
+  const warnings: string[] = [];
+  const rows: Record<string, DexSimRow> = {};
+  const out: DexSimResult = {
+    chain: chainKey,
+    contract,
+    side,
+    amountUsd,
+    resultUnit: side === "sell" ? "USD" : "TOKEN",
+    rows,
+    cow: null,
+    bestKey: null,
+    fetchedAt: Date.now(),
+    warnings,
+  };
+  if (decimals == null) {
+    warnings.push("Desimal token tidak diketahui");
+    return out;
+  }
+  const baseByAddr = new Map(cfg.bases.map((b) => [b.address.toLowerCase(), b]));
+
+  type Job = { key: string; p: DexPoolInfo; base: BaseToken; kind: "v2" | "v3" | "balancer"; fee?: number; feeBps?: number; quoter?: string };
+  const jobs: Job[] = [];
+  for (const p of result.pools) {
+    if (p.untradeable) continue;
+    const base = baseByAddr.get(p.quoteToken.toLowerCase());
+    if (!base) continue;
+    const key = dexPoolKey(p);
+    const v3 = cfg.v3.find((d) => d.id === p.dex);
+    const v2 = cfg.v2.find((d) => d.id === p.dex);
+    if (v3 && p.feePct != null) jobs.push({ key, p, base, kind: "v3", fee: Math.round(p.feePct * 10_000), quoter: v3.quoter });
+    else if (v2) jobs.push({ key, p, base, kind: "v2", feeBps: Math.round((p.feePct ?? v2.feePct) * 100) });
+    else if (p.dex === "balancer" && p.poolId && cfg.balancerVault) jobs.push({ key, p, base, kind: "balancer" });
+  }
+
+  // Ronde A: harga native terbaru + reserves V2 terbaru.
+  const ra: Call[] = [];
+  if (cfg.nativeUsdPool) ra.push({ target: cfg.nativeUsdPool.pool, data: enc.noArgs(SEL.slot0) });
+  const v2Jobs = jobs.filter((j) => j.kind === "v2");
+  for (const j of v2Jobs) ra.push({ target: j.p.pool, data: enc.noArgs(SEL.getReserves) });
+  const resA = await multicall(rpcUrl, cfg, ra);
+  let ethUsd: number | null = null;
+  let ai = 0;
+  if (cfg.nativeUsdPool) {
+    const r = resA[ai++];
+    if (r?.success) ethUsd = v3PriceInBase(readUint(r.data, 0), !cfg.nativeUsdPool.usdIsToken0, cfg.weth.decimals, cfg.nativeUsdPool.usdDecimals);
+  }
+  const baseUsd = (b: BaseToken): number | null => (b.stable ? 1 : b.address.toLowerCase() === cfg.weth.address.toLowerCase() ? ethUsd : null);
+  const reserves = new Map<Job, { rt: bigint; rb: bigint }>();
+  for (const j of v2Jobs) {
+    const r = resA[ai++];
+    if (!r?.success) continue;
+    const r0 = readUint(r.data, 0);
+    const r1 = readUint(r.data, 1);
+    const tokenIs0 = isLower(contract, j.base.address);
+    reserves.set(j, { rt: tokenIs0 ? r0 : r1, rb: tokenIs0 ? r1 : r0 });
+  }
+
+  const refUsd = result.refUsd;
+  if (side === "sell" && !refUsd) warnings.push("Harga referensi tidak ada; simulasi jual dilewati");
+  const amountsFor = (j: Job): { full: bigint; small: bigint; inHuman: number } | null => {
+    const bu = baseUsd(j.base);
+    if (bu == null) return null;
+    if (side === "sell") {
+      if (!refUsd) return null;
+      const inHuman = amountUsd / refUsd;
+      const full = fromHuman(inHuman, decimals);
+      return { full, small: full / BigInt(100), inHuman };
+    }
+    const inHuman = amountUsd / bu;
+    const full = fromHuman(inHuman, j.base.decimals);
+    return { full, small: full / BigInt(100), inHuman };
+  };
+  const tokenIn = side === "sell" ? contract : null;
+
+  // Ronde B: quote V3 + Balancer (penuh + 1/100).
+  const rb: Call[] = [];
+  const rbMap: Array<{ j: Job; small: boolean }> = [];
+  const outs = new Map<Job, { full?: bigint; small?: bigint }>();
+  for (const j of jobs) {
+    const amts = amountsFor(j);
+    if (!amts || amts.full === BigInt(0)) continue;
+    const inAddr = tokenIn ?? j.base.address;
+    const outAddr = side === "sell" ? j.base.address : contract;
+    for (const small of [false, true]) {
+      const amt = small ? amts.small : amts.full;
+      if (amt === BigInt(0)) continue;
+      if (j.kind === "v3" && j.quoter && j.fee != null) {
+        rb.push({ target: j.quoter, data: enc.quoteExactInputSingle(inAddr, outAddr, amt, j.fee) });
+        rbMap.push({ j, small });
+      } else if (j.kind === "balancer" && cfg.balancerVault && j.p.poolId) {
+        rb.push({ target: cfg.balancerVault, data: enc.queryBatchSwap(j.p.poolId, amt, inAddr, outAddr, cfg.multicall3) });
+        rbMap.push({ j, small });
+      } else if (j.kind === "v2") {
+        const rs = reserves.get(j);
+        if (!rs || rs.rt === BigInt(0) || rs.rb === BigInt(0)) continue;
+        const [rIn, rOut] = side === "sell" ? [rs.rt, rs.rb] : [rs.rb, rs.rt];
+        const fee = BigInt(Math.max(0, Math.min(10_000, j.feeBps ?? 30)));
+        const inWithFee = amt * (BigInt(10_000) - fee);
+        const o = (inWithFee * rOut) / (rIn * BigInt(10_000) + inWithFee);
+        const cur = outs.get(j) ?? {};
+        cur[small ? "small" : "full"] = o;
+        outs.set(j, cur);
+      }
+    }
+  }
+  const resB = await multicall(rpcUrl, cfg, rb);
+  resB.forEach((r, i) => {
+    const { j, small } = rbMap[i];
+    if (!r.success || !r.data) return;
+    let o = BigInt(0);
+    if (j.kind === "v3") o = readUint(r.data, 0);
+    else {
+      const deltas = readUintArrayAt(r.data, Number(readUint(r.data, 0)));
+      const d1 = deltas[1] ?? BigInt(0);
+      const signed = d1 >= BigInt(1) << BigInt(255) ? d1 - TWO_256 : d1;
+      o = signed < BigInt(0) ? -signed : BigInt(0);
+    }
+    const cur = outs.get(j) ?? {};
+    cur[small ? "small" : "full"] = o;
+    outs.set(j, cur);
+  });
+
+  for (const j of jobs) {
+    const amts = amountsFor(j);
+    const bu = baseUsd(j.base);
+    if (!amts || bu == null) {
+      rows[j.key] = { execUsd: null, impactPct: null, result: null, note: bu == null ? `harga ${j.base.symbol} tidak ada` : "tanpa harga ref" };
+      continue;
+    }
+    const o = outs.get(j);
+    if (!o?.full || o.full === BigInt(0)) {
+      rows[j.key] = { execUsd: null, impactPct: null, result: null, note: "quote gagal / likuiditas kurang" };
+      continue;
+    }
+    const smallInHuman = amts.inHuman / 100;
+    if (side === "sell") {
+      const usd = toHuman(o.full, j.base.decimals) * bu;
+      const exec = amts.inHuman > 0 ? usd / amts.inHuman : null;
+      const smallExec = o.small && o.small > BigInt(0) && smallInHuman > 0 ? (toHuman(o.small, j.base.decimals) * bu) / smallInHuman : null;
+      rows[j.key] = {
+        execUsd: exec,
+        result: usd,
+        impactPct: exec != null && smallExec ? Math.max(0, ((smallExec - exec) / smallExec) * 100) : null,
+      };
+    } else {
+      const tokens = toHuman(o.full, decimals);
+      const exec = tokens > 0 ? amountUsd / tokens : null;
+      const smallTokens = o.small ? toHuman(o.small, decimals) : 0;
+      const smallExec = smallTokens > 0 ? amountUsd / 100 / smallTokens : null;
+      rows[j.key] = {
+        execUsd: exec,
+        result: tokens,
+        impactPct: exec != null && smallExec ? Math.max(0, ((exec - smallExec) / smallExec) * 100) : null,
+      };
+    }
+  }
+
+  // CoW: indikatif, arah jual saja.
+  if (cfg.cowNetwork) {
+    if (side === "buy") {
+      out.cow = { execUsd: null, impactPct: null, result: null, note: "CoW: indikatif, simulasi beli tidak tersedia" };
+    } else if (refUsd) {
+      const tokenLc = contract.toLowerCase();
+      const buy = tokenLc === cfg.weth.address.toLowerCase() ? cfg.bases.find((b) => b.symbol === "USDC")! : cfg.weth;
+      const inHuman = amountUsd / refUsd;
+      const q = await cowQuote(cfg, contract, fromHuman(inHuman, decimals), buy);
+      const bu = baseUsd(buy);
+      if ("buyAmount" in q && bu != null) {
+        const usd = toHuman(q.buyAmount, buy.decimals) * bu;
+        out.cow = { execUsd: inHuman > 0 ? usd / inHuman : null, impactPct: null, result: usd, note: "indikatif" };
+      } else {
+        out.cow = { execUsd: null, impactPct: null, result: null, note: "error" in q ? q.error : "tanpa harga" };
+      }
+    }
+  }
+
+  let bestVal = -1;
+  for (const [key, row] of Object.entries(rows)) {
+    if (row.result != null && row.result > bestVal) {
+      bestVal = row.result;
+      out.bestKey = key;
+    }
+  }
+  if (out.cow?.result != null && out.cow.result > bestVal) out.bestKey = DEX_SIM_COW_KEY;
+  return out;
 }
 
 // ---------- antrian + cache server ----------
@@ -965,5 +1166,46 @@ export async function getDexPools(
     throw error;
   } finally {
     inflight.delete(key);
+  }
+}
+
+// ---------- simulasi: cache singkat ----------
+
+const SIM_CACHE_TTL_MS = 30_000;
+const simCache = new Map<string, { at: number; sim: DexSimResult }>();
+const simInflight = new Map<string, Promise<DexSimResult>>();
+
+export async function getDexSim(
+  chain: string,
+  contract: string,
+  side: DexSimSide,
+  amountUsd: number,
+  opts: DetectOptions,
+): Promise<{ sim: DexSimResult; cached: boolean }> {
+  const key = `${dexCacheKey(chain, contract, opts.sizeUsd)}|${side}|${Math.round(amountUsd * 100) / 100}`;
+  const hit = simCache.get(key);
+  if (hit && Date.now() - hit.at < SIM_CACHE_TTL_MS) return { sim: hit.sim, cached: true };
+  const running = simInflight.get(key);
+  if (running) return { sim: await running, cached: false };
+  const job = (async () => {
+    const { result } = await getDexPools(chain, contract, opts);
+    await acquire();
+    try {
+      return chain === "SOL" ? await simulateSolanaPools(result, side, amountUsd) : await simulateDexPools(result, side, amountUsd);
+    } finally {
+      release();
+    }
+  })();
+  simInflight.set(key, job);
+  try {
+    const sim = await job;
+    simCache.set(key, { at: Date.now(), sim });
+    if (simCache.size > 500) {
+      const cutoff = Date.now() - SIM_CACHE_TTL_MS;
+      for (const [k, v] of simCache) if (v.at < cutoff) simCache.delete(k);
+    }
+    return { sim, cached: false };
+  } finally {
+    simInflight.delete(key);
   }
 }
