@@ -186,6 +186,7 @@ const EXCHANGE_NAMES: Record<string, string> = {
   safetrade: "SafeTrade",
   "binance-alpha": "Binance Alpha",
   cexio: "CEX.IO",
+  biconomy: "Biconomy",
 };
 
 function runTransaction<T>(db: DatabaseSync, fn: () => T): T {

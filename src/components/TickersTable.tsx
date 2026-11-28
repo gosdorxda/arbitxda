@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlsoOnCell } from "@/components/AlsoOnCell";
 import { DepthCell, DepthProvider, DepthStatusBar } from "@/components/DepthBar";
 import { useVisibleDepth } from "@/components/useVisibleDepth";
+import { DexPoolsCell, DexPoolsProvider, pickDexContract, useDexPools, type DexTarget } from "@/components/DexPoolsCell";
 import { buildAlsoOnIndex, peersForRow, type TickerTableRow } from "@/lib/also-on";
 import {
   columnFilteringFeature,
@@ -420,6 +421,13 @@ function ContractsCell({ row }: { row: TickerRow }) {
   );
 }
 
+function dexHintUsd(row: TickerRow): number | null {
+  const quote = row.quote?.toUpperCase();
+  if (quote !== "USDT" && quote !== "USD" && quote !== "USDC") return null;
+  const price = row.last ?? (row.bid != null && row.ask != null ? (row.bid + row.ask) / 2 : null);
+  return price != null && Number.isFinite(price) && price > 0 ? price : null;
+}
+
 function SymbolCell({ row, label }: { row: TickerRow; label: string }) {
   const href = getSpotUrl(row.exchange, row.base, row.quote, row.raw_symbol, row.contracts);
   const text = <span className="font-medium text-foreground">{label}</span>;
@@ -662,6 +670,18 @@ const columns = columnHelper.columns([
     enableGlobalFilter: false,
     meta: { align: "left" },
     cell: (info) => <ContractsCell row={info.row.original} />,
+  }),
+  columnHelper.display({
+    id: "dexpools",
+    header: "DEX Pools",
+    enableSorting: false,
+    enableGlobalFilter: false,
+    enableHiding: true,
+    meta: { align: "left" },
+    cell: (info) => {
+      const row = info.row.original;
+      return <DexPoolsCell contracts={row.contracts} hintUsd={dexHintUsd(row)} />;
+    },
   }),
   columnHelper.display({
     id: "chainstatus",
@@ -926,9 +946,20 @@ export function TickersTable({
   const depthLookup = useVisibleDepth(pageRows, depthEnabled, {
     page: filteredCount === 0 ? 1 : pageIndex + 1,
   });
+  const dexEnabled = table.getColumn("dexpools")?.getIsVisible() !== false;
+  const dexTargets = useMemo<DexTarget[]>(() => {
+    const out: DexTarget[] = [];
+    for (const row of pageRows) {
+      const picked = pickDexContract(row.contracts);
+      if (picked) out.push({ ...picked, hintUsd: dexHintUsd(row) });
+    }
+    return out;
+  }, [pageRows]);
+  const dexLookup = useDexPools(dexTargets, dexEnabled);
 
   return (
     <DepthProvider value={depthLookup}>
+    <DexPoolsProvider value={dexLookup}>
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="mb-3 flex flex-col gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
@@ -1315,6 +1346,7 @@ export function TickersTable({
         </div>
       </div>
     </div>
+    </DexPoolsProvider>
     </DepthProvider>
   );
 }

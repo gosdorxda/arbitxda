@@ -1633,3 +1633,239 @@ html[data-theme="light"] .compare-contract.is-native {
 .tickers-table.compare-routes-table tbody tr.compare-suspended:hover > td {
   opacity: 0.92;
 }
+
+/* ---------- DEX Pools column ---------- */
+.dex-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  max-width: 15rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: help;
+  text-align: left;
+}
+
+.dex-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--foreground);
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.dex-badge.is-best {
+  border-color: var(--border-strong);
+  font-weight: 600;
+}
+
+.dex-badge.dex-univ2,
+.dex-badge.dex-univ3 { color: #f472b6; }
+.dex-badge.dex-sushi { color: #a78bfa; }
+.dex-badge.dex-balancer { color: #e5e7eb; }
+.dex-badge.dex-cow { color: #60a5fa; }
+.dex-badge.dex-pancakev2,
+.dex-badge.dex-pancakev3 { color: #f0b90b; }
+.dex-badge.dex-raydium { color: #c084fc; }
+.dex-badge.dex-orca { color: #22d3ee; }
+.dex-badge.is-off { color: var(--muted); text-decoration: line-through; }
+
+.dex-status {
+  font-size: 11px;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.dex-pop {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 24rem;
+  max-width: min(64rem, calc(100vw - 16px));
+  max-height: min(460px, calc(100vh - 16px));
+  overflow: hidden;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px var(--sticky-shadow);
+  color: var(--foreground);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.dex-pop-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.dex-pop-title {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dex-pop-title b {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.dex-pop-head-addr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-num, monospace);
+  font-size: 10.5px;
+}
+
+.dex-pop-summary {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dex-pop-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.dex-pop-stat:last-child { border-right: none; }
+
+.dex-pop-stat-label {
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.dex-pop-stat-value {
+  font-family: var(--font-num, monospace);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dex-pop-body {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+}
+
+.dex-pop-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dex-pop-table th,
+.dex-pop-table td {
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 10px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.dex-pop-table th:last-child,
+.dex-pop-table td:last-child { border-right: none; }
+
+.dex-pop-table tbody tr:last-child td { border-bottom: none; }
+
+.dex-pop-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2, var(--panel));
+  border-bottom: 1px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.dex-pop-table .num {
+  text-align: right;
+  font-family: var(--font-num, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.dex-pop-table th.num { font-family: var(--font-ui); }
+
+.dex-pop-table tbody tr:hover td { background: var(--hover); }
+.dex-pop-table tr.is-best td { background: var(--up-soft); }
+.dex-pop-table tr.is-best td:first-child { box-shadow: inset 2px 0 0 var(--up); }
+.dex-pop-table tr.is-untradeable td { color: var(--muted); }
+.dex-pop-table tr.is-untradeable .dex-pop-link { color: var(--muted); }
+
+.dex-pop-pair { margin-right: 4px; }
+
+.dex-pop-status {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.dex-pop-status.is-ok { color: var(--up); background: var(--up-soft); }
+.dex-pop-status.is-bad { color: var(--down); background: var(--down-soft); }
+
+.dex-pop-note {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.dex-pop-addr {
+  margin-left: 4px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: var(--font-num, monospace);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.dex-pop-addr:hover { color: var(--foreground); border-color: var(--border-strong); }
+
+.dex-pop-empty { padding: 6px 10px; }
+
+.dex-pop-link {
+  color: var(--accent, #4c9aff);
+  text-decoration: none;
+  font-family: inherit;
+}
+
+.dex-pop-link:hover,
+.dex-pop-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
